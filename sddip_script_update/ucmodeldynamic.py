@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 import gurobipy as gp
 import numpy as np
 from scipy import linalg
+from scipy import sparse
+
 
 
 class ModelBuilder(ABC):
@@ -74,6 +76,10 @@ class ModelBuilder(ABC):
         self.cut_constraints = None
         # Cut lower bound
         self.cut_lower_bound = None
+        # 变量偏移量dict
+        self.var_offsets = None
+        # 变量长度
+        self.var_len = None
 
         self.bin_type = gp.GRB.CONTINUOUS if lp_relax else gp.GRB.BINARY
 
@@ -461,119 +467,199 @@ class ModelBuilder(ABC):
             (self.theta >= lower_bound), "cut-lb"
         )
 
-
-    def _get_var_index(self, var_type, index=None):
-
+    def _compute_var_offsets(self):
+        """根据每个变量的长度计算偏移量，赋值到self.var_offsets"""
         n_x_bs = sum(self.backsight_periods)
         var_len = {
             'x': self.n_generators,
             'y': self.n_generators,
-            'x_bs': n_x_bs,
-            'x_bs_p': n_x_bs,
-            'x_bs_n': n_x_bs,
+            'x_bs': [sum(self.backsight_periods[g]) for g in range(len(self.backsight_periods))],
+            'x_bs_p': [sum(self.backsight_periods[g]) for g in range(len(self.backsight_periods))],
+            'x_bs_n': [sum(self.backsight_periods[g]) for g in range(len(self.backsight_periods))],
             'ys_c': self.n_storages,
             'ys_dc': self.n_storages,
             'u_c_dc': self.n_storages,
-            'z_y': 4 * self.n_generators + 2 * sum(self.backsight_periods),
-            'z_x_bs': 4 * self.n_generators,
-            'soc': 6 * self.n_generators + self.n_storage,
-            'ys_P': self.ys_p,
+            'soc': self.n_storages,
+            'socs_p': self.n_storages,
+            'socs_n': self.n_storages,
+            'z_x': self.n_generators,
+            'z_y': self.n_generators,
+            'z_x_bs': n_x_bs,
+            'z_soc': self.n_storages,
+            's_up': self.n_generators,
+            's_down': self.n_generators,
+            'ys_p': 1,
+            'ys_n': 1,
+            'theta': 1,
+            'delta': 1
         }
 
-        var_offsets = {}
+        current_offset = 0
+
+        for name, length in var_len.items():
+            if isinstance(length, int):
+                # 普通整数变量
+                self.var_offsets[name] = current_offset
+                current_offset += length
+
+            elif isinstance(length, list):
+                # 列表类型变量（如x_bs）
+                offsets = []
+                for sub_len in length:
+                    offsets.append(current_offset)
+                    current_offset += sub_len
+                self.var_offsets[name] = offsets
+
+            else:
+                raise TypeError(f"Unsupported type for {name}: {type(length)}")
+
+        self.var_len = current_offset
 
 
+    def _get_var_index(self, var_type, index=0, g=None)->int:
 
-        """
-            self.x = []
-        # Dispatch decision
-        self.y = []
-        # Generator state backsight variables
-        # Given current stage t, x_bs[g][k] is the state of generator g at stage (t-k-1)
-        self.x_bs = []
-        self.x_bs_p = []
-        self.x_bs_n = []
-        # Storage charge/discharge
-        self.ys_c = []
-        self.ys_dc = []
-        # Switch variable
-        self.u_c_dc = []
-        # SOC and slack
-        self.soc = []
-        self.socs_p = []
-        self.socs_n = []
-        # Copy variables
-        self.z_x = []
-        self.z_y = []
-        self.z_x_bs = []
-        self.z_soc = []
-        # Startup decsision
-        self.s_up = []
-        # Shutdown decision
-        self.s_down = []
-        # Expected value function approximation
-        self.theta = None
-        # Positive slack
-        self.ys_p = None
-        # Negative slack
-        self.ys_n = None
-        """
+        if self.var_offsets is None:
+            self._compute_var_offsets()
+
+        if g is None:
+            return self.var_offsets[var_type] + index
+        else:
+            return self.var_offsets[var_type][g] + index
+
+    def _get_var_len(self):
+        if self.var_len is None:
+            self._compute_var_offsets()
+        return self.var_len
+
+    def get_problem_constrains_matrix(
+            self,
+            # balance_constraints
+            total_demand: float,
+            total_renewable_generation: float,
+            discharge_eff: list,
+            # generator_constraints
+            min_generation: list,
+            max_generation: list,
+            # storage_constraints
+            max_charge_rate: list,
+            max_discharge_rate: list,
+            max_soc: list,
+            # soc_transfer
+            charge_eff: list,
+            # final_soc_constraints
+            final_soc: list,
+            # power_flow_constraints
+            ptdf,
+            max_line_capacities: list,
+            demand: list,
+            renewable_generation: list,
+            # discharge_eff
+
+            # startup_shutdown_constraints
+
+            # ramp_rate_constraints
+            max_rate_up: list,
+            max_rate_down: list,
+            startup_rate: list,
+            shutdown_rate: list,
+            # up_down_time_constraints
+            min_up_times: list,
+            min_down_times: list,
+            # cut_lower_bound
+            lower_bound: float,
+            cuts_list: list
+    ):
+        X_vector = self.get_var_vector()
+        A_eq, b_eq = self.get_equality_constraints_matrix(
+            total_demand,
+            total_renewable_generation,
+            discharge_eff,
+            charge_eff,
+        )
+        A_ub, b_ub = self.get_inequality_constraints(
+            min_generation,
+            max_generation,
+            max_charge_rate,
+            max_discharge_rate,
+            max_soc,
+            final_soc,
+            ptdf,
+            max_line_capacities,
+            demand,
+            renewable_generation,
+            discharge_eff,
+            max_rate_up,
+            max_rate_down,
+            startup_rate,
+            shutdown_rate,
+            min_up_times,
+            min_down_times,
+            lower_bound
+        )
+        A_ub_cut, b_cut_ub = self.get_inequality_cut_constrains(cuts_list)
+        return X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub
+
+    def get_var_vector(self):
+        X_vector = []
+        X_vector.extend(self.x)
+        X_vector.extend(self.y)
+        X_vector.extend([x_bs for x_bs in self.x_bs])
+        X_vector.extend([x_bs_p for x_bs_p in self.x_bs_p])
+        X_vector.extend([x_bs_n for x_bs_n in self.x_bs_n])
+        X_vector.extend(self.ys_c)
+        X_vector.extend(self.ys_dc)
+        X_vector.extend(self.u_c_dc)
+        X_vector.extend(self.soc)
+        X_vector.extend(self.socs_p)
+        X_vector.extend(self.socs_n)
+        X_vector.extend(self.z_x)
+        X_vector.extend(self.z_y)
+        X_vector.extend([z_x_bs for z_x_bs in self.z_x_bs])
+        X_vector.extend(self.z_soc)
+        X_vector.extend(self.s_up)
+        X_vector.extend(self.s_down)
+        X_vector.append(self.ys_p)
+        X_vector.append(self.ys_n)
+        X_vector.append(self.theta)
+        X_vector.append(self.delta)
+        return X_vector
 
 
+    def get_equality_constraints_matrix(
+            self,
+            # balance_constraints
+            total_demand,
+            total_renewable_generation,
+            discharge_eff,
+            # soc_transfer
+            charge_eff,
 
-
-
-
-        # if index is None:
-        #     return var_offsets[var_type]
-        # else:
-        #     return var_offsets[var_type] + index
-
-    def get_equality_constraints(self):
+    ):
         """等式约束的矩阵形式：A_eq * v = b_eq"""
-
-        # 获取变量维度
-        n_g = self.n_generators
-        n_s = self.n_storages
-        n_bp_total = sum(self.backsight_periods)
-
-        # 计算总变量数
-        total_vars = (n_g * 4 +  # x, y, z_x, z_y
-                      n_s * 8 +  # ys_c, ys_dc, u_c_dc, soc, socs_p, socs_n, z_soc, z_soc
-                      n_bp_total * 4 +  # x_bs, x_bs_p, x_bs_n, z_x_bs
-                      n_g * 2 +  # s_up, s_down
-                      3)  # theta, ys_p, ys_n
-
-        # 初始化约束计数器
-        eq_constraint_count = 0
-
-        # 1. 平衡约束 (1个)
-        eq_constraint_count += 1
-
-        # 2. SOC转移约束 (n_s个)
-        eq_constraint_count += n_s
-
-        # 3. 后视变量约束 (n_bp_total个)
-        eq_constraint_count += n_bp_total
 
         # 初始化系数矩阵和右侧向量
         A_eq_data = []
         A_eq_rows = []
         A_eq_cols = []
-        b_eq = np.zeros(eq_constraint_count)
+        b_eq = []
 
+        # 约束对应行数
         current_row = 0
 
-        # 1. 平衡约束: sum(y) + sum(discharge_eff * ys_dc - ys_c) + ys_p - ys_n = total_demand - total_renewable
-        for g in range(n_g):
+        # 1. 平衡约束: gp.quicksum(self.y) +
+        #             gp.quicksum(discharge_eff[s] * self.ys_dc[s] - self.ys_c[s] for s in range(self.n_storages))
+        #             + self.ys_p
+        #             - self.ys_n
+        #             == total_demand - total_renewable_generation
+        for g in range(self.n_generators):
             # y[g] 系数为 1
             A_eq_data.append(1.0)
             A_eq_rows.append(current_row)
             A_eq_cols.append(self._get_var_index('y', g))
 
-        for s in range(n_s):
+        for s in range(self.n_storages):
             # ys_dc[s] 系数为 discharge_eff[s]
-            A_eq_data.append(self.discharge_eff[s])
+            A_eq_data.append(discharge_eff[s])
             A_eq_rows.append(current_row)
             A_eq_cols.append(self._get_var_index('ys_dc', s))
 
@@ -592,11 +678,17 @@ class ModelBuilder(ABC):
         A_eq_rows.append(current_row)
         A_eq_cols.append(self._get_var_index('ys_n'))
 
-        b_eq[current_row] = self.total_demand - self.total_renewable_generation
+        b_eq[current_row] = total_demand - total_renewable_generation
         current_row += 1
 
-        # 2. SOC转移约束: soc = z_soc + charge_eff * ys_c - ys_dc + socs_p - socs_n
-        for s in range(n_s):
+        # 2. SOC转移约束:
+        # self.soc[s] == self.z_soc[s]
+        #             + charge_eff[s] * self.ys_c[s]
+        #             - self.ys_dc[s]
+        #             + self.socs_p[s]
+        #             - self.socs_n[s]
+        #             for s in range(self.n_storages)
+        for s in range(self.n_storages):
             # soc[s] 系数为 1
             A_eq_data.append(1.0)
             A_eq_rows.append(current_row)
@@ -608,7 +700,7 @@ class ModelBuilder(ABC):
             A_eq_cols.append(self._get_var_index('z_soc', s))
 
             # ys_c[s] 系数为 -charge_eff[s]
-            A_eq_data.append(-self.charge_eff[s])
+            A_eq_data.append(-charge_eff[s])
             A_eq_rows.append(current_row)
             A_eq_cols.append(self._get_var_index('ys_c', s))
 
@@ -630,206 +722,276 @@ class ModelBuilder(ABC):
             b_eq[current_row] = 0
             current_row += 1
 
-        # 3. 后视变量约束: z_x_bs = x_bs + x_bs_p - x_bs_n
-        bs_index = 0
-        for g in range(n_g):
+        # 3. up_down_time_constraints中的后视变量约束:
+        # self.z_x_bs[g][k]
+        #        == self.x_bs[g][k] + self.x_bs_p[g][k] - self.x_bs_n[g][k]
+        #        for g in range(self.n_generators)
+        #        for k in range(self.backsight_periods[g])
+        for g in range(self.n_generators):
             for k in range(self.backsight_periods[g]):
                 # z_x_bs[g][k] 系数为 1
                 A_eq_data.append(1.0)
                 A_eq_rows.append(current_row)
-                A_eq_cols.append(self._get_var_index('z_x_bs', bs_index))
+                A_eq_cols.append(self._get_var_index('z_x_bs', k, g))
 
                 # x_bs[g][k] 系数为 -1
                 A_eq_data.append(-1.0)
                 A_eq_rows.append(current_row)
-                A_eq_cols.append(self._get_var_index('x_bs', bs_index))
+                A_eq_cols.append(self._get_var_index('x_bs', k, g))
 
                 # x_bs_p[g][k] 系数为 -1
                 A_eq_data.append(-1.0)
                 A_eq_rows.append(current_row)
-                A_eq_cols.append(self._get_var_index('x_bs_p', bs_index))
+                A_eq_cols.append(self._get_var_index('x_bs_p', k, g))
 
                 # x_bs_n[g][k] 系数为 1
                 A_eq_data.append(1.0)
                 A_eq_rows.append(current_row)
-                A_eq_cols.append(self._get_var_index('x_bs_n', bs_index))
+                A_eq_cols.append(self._get_var_index('x_bs_n', k, g))
 
                 b_eq[current_row] = 0
                 current_row += 1
-                bs_index += 1
 
         # 创建稀疏矩阵
         A_eq = sparse.csr_matrix((A_eq_data, (A_eq_rows, A_eq_cols)),
-                                 shape=(eq_constraint_count, total_vars))
+                                 shape=(current_row, self._get_var_len()))
 
         return A_eq, b_eq
 
-    def get_inequality_constraints(self):
+    def get_inequality_constraints(
+            self,
+            # generator_constraints
+            min_generation: list,
+            max_generation: list,
+            # storage_constraints
+            max_charge_rate: list,
+            max_discharge_rate: list,
+            max_soc: list,
+            # final_soc_constraints
+            final_soc: list,
+            # power_flow_constraints
+            ptdf,
+            max_line_capacities: list,
+            demand: list,
+            renewable_generation: list,
+            discharge_eff,
+            # startup_shutdown_constraints
+            # ramp_rate_constraints
+            max_rate_up: list,
+            max_rate_down: list,
+            startup_rate: list,
+            shutdown_rate: list,
+            # up_down_time_constraints
+            min_up_times: list,
+            min_down_times: list,
+            # cut_lower_bound
+            lower_bound: float
+    ):
         """不等式约束的矩阵形式：A_ub * v <= b_ub"""
-
-        # 获取变量维度
-        n_g = self.n_generators
-        n_s = self.n_storages
-        n_lines = self.n_lines
-        n_bp_total = sum(self.backsight_periods)
-
-        # 计算总变量数
-        total_vars = (n_g * 4 +  # x, y, z_x, z_y
-                      n_s * 8 +  # ys_c, ys_dc, u_c_dc, soc, socs_p, socs_n, z_soc, z_soc
-                      n_bp_total * 4 +  # x_bs, x_bs_p, x_bs_n, z_x_bs
-                      n_g * 2 +  # s_up, s_down
-                      3)  # theta, ys_p, ys_n
-
-        # 初始化约束计数器
-        ub_constraint_count = 0
-
-        # 1. 发电机最小发电量约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 2. 发电机最大发电量约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 3. 储能最大充电速率约束 (n_s个)
-        ub_constraint_count += n_s
-
-        # 4. 储能最大放电速率约束 (n_s个)
-        ub_constraint_count += n_s
-
-        # 5. 最大SOC约束 (n_s个)
-        ub_constraint_count += n_s
-
-        # 6. 最终SOC约束 (n_s个)
-        ub_constraint_count += n_s
-
-        # 7. 功率流约束 (2 * n_lines个)
-        ub_constraint_count += 2 * n_lines
-
-        # 8. 启动约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 9. 关闭约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 10. 上升速率约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 11. 下降速率约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 12. 上线时间约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 13. 下线时间约束 (n_g个)
-        ub_constraint_count += n_g
-
-        # 14. 割下界约束 (1个)
-        ub_constraint_count += 1
 
         # 初始化系数矩阵和右侧向量
         A_ub_data = []
         A_ub_rows = []
         A_ub_cols = []
-        b_ub = np.zeros(ub_constraint_count)
+        b_ub = []
 
         current_row = 0
 
-        # 1. 发电机最小发电量约束: y >= min_generation * x - delta
-        # 转换为: -y + min_generation * x <= delta
-        for g in range(n_g):
-            A_ub_data.append(-1.0)  # -y[g]
+        # 1. generator_constraints 发电机最小发电量约束:
+        # self.y[g] >= min_generation[g] * self.x[g] - self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: -y + min_generation * x - delta <= 0
+        for g in range(self.n_generators):
+            A_ub_data.append(-1.0)
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('y', g))
 
-            A_ub_data.append(self.min_generation[g])  # min_generation[g] * x[g]
+            A_ub_data.append(min_generation[g])
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('x', g))
+
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
 
             b_ub[current_row] = self.delta
             current_row += 1
 
-        # 2. 发电机最大发电量约束: y <= max_generation * x + delta
-        # 转换为: y - max_generation * x <= delta
-        for g in range(n_g):
-            A_ub_data.append(1.0)  # y[g]
+        # 2. generator_constraints 发电机最大发电量约束
+        # self.y[g] <= max_generation[g] * self.x[g] + self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: y - max_generation * x - delta <= 0
+        for g in range(self.n_generators):
+            A_ub_data.append(1.0)
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('y', g))
 
-            A_ub_data.append(-self.max_generation[g])  # -max_generation[g] * x[g]
+            A_ub_data.append(-max_generation[g])
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('x', g))
 
-            b_ub[current_row] = self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = 0
             current_row += 1
 
-        # 3. 储能最大充电速率约束: ys_c <= max_charge_rate * u_c_dc
+        # 3. storage_constraints 储能最大充电速率约束
+        # self.ys_c[s] <= max_charge_rate[s] * self.u_c_dc[s]
+        #                 for s in range(self.n_storages)
         # 转换为: ys_c - max_charge_rate * u_c_dc <= 0
-        for s in range(n_s):
+        for s in range(self.n_storages):
             A_ub_data.append(1.0)  # ys_c[s]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('ys_c', s))
 
-            A_ub_data.append(-self.max_charge_rate[s])  # -max_charge_rate[s] * u_c_dc[s]
+            A_ub_data.append(-max_charge_rate[s])  # -max_charge_rate[s] * u_c_dc[s]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('u_c_dc', s))
 
             b_ub[current_row] = 0
             current_row += 1
 
-        # 4. 储能最大放电速率约束: ys_dc <= max_discharge_rate * (1 - u_c_dc)
+        # 4. storage_constraints 储能最大放电速率约束
+        # self.ys_dc[s] <= max_discharge_rate[s] * (1 - self.u_c_dc[s])
+        #                 for s in range(self.n_storages)
         # 转换为: ys_dc + max_discharge_rate * u_c_dc <= max_discharge_rate
-        for s in range(n_s):
+        for s in range(self.n_storages):
             A_ub_data.append(1.0)  # ys_dc[s]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('ys_dc', s))
 
-            A_ub_data.append(self.max_discharge_rate[s])  # max_discharge_rate[s] * u_c_dc[s]
+            A_ub_data.append(max_discharge_rate[s])  # max_discharge_rate[s] * u_c_dc[s]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('u_c_dc', s))
 
-            b_ub[current_row] = self.max_discharge_rate[s]
+            b_ub[current_row] = max_discharge_rate[s]
             current_row += 1
 
-        # 5. 最大SOC约束: soc <= max_soc + delta
-        for s in range(n_s):
+        # 5. storage_constraints 最大SOC约束
+        # self.soc[s] <= max_soc[s] + self.delta
+        #                 for s in range(self.n_storages)
+        for s in range(self.n_storages):
             A_ub_data.append(1.0)  # soc[s]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('soc', s))
 
-            b_ub[current_row] = self.max_soc[s] + self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = max_soc[s]
             current_row += 1
 
-        # 6. 最终SOC约束: soc >= final_soc - delta
-        # 转换为: -soc <= -final_soc + delta
-        for s in range(n_s):
+        # 6. final_soc_constraints 最终SOC约束
+        # self.soc[s] >= final_soc[s] - self.delta
+        #                 for s in range(self.n_storages)
+        # 转换为: -soc - delta <= -final_soc
+        for s in range(self.n_storages):
             A_ub_data.append(-1.0)  # -soc[s]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('soc', s))
 
-            b_ub[current_row] = -self.final_soc[s] + self.delta
-            current_row += 1
-
-        # 7. 功率流约束 (需要PTDF计算，这里简化表示)
-        for l in range(n_lines):
-            # 正向功率流约束
-            # 这里需要根据PTDF矩阵计算系数，简化表示
-            A_ub_data.append(1.0)  # 简化系数
+            A_ub_data.append(-1.0)
             A_ub_rows.append(current_row)
-            A_ub_cols.append(0)  # 简化位置
+            A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = self.max_line_capacities[l] + self.delta
+            b_ub[current_row] = -final_soc[s]
             current_row += 1
 
-            # 反向功率流约束
-            A_ub_data.append(-1.0)  # 简化系数
+        # 7. power_flow_constraints 功率流约束
+        # max_line_capacities[l] + self.delta <= gp.quicksum(
+        #                 ptdf[l, b]
+        #                 * (
+        #                     gp.quicksum(self.y[g] for g in self.generators_at_bus[b])
+        #                     + gp.quicksum(
+        #                         discharge_eff[s] * self.ys_dc[s] - self.ys_c[s]
+        #                         for s in self.storages_at_bus[b]
+        #                     )
+        #                     - demand[b]
+        #                     + renewable_generation[b]
+        #                 )
+        #                 for b in range(self.n_buses)
+        #             ) <= max_line_capacities[l] + self.delta
+
+        # (上界)  sum_b(
+        #      sum_g(ptdf[l,b]*y_g)
+        #   + sum_s(ptdf[l,b]*discharge_eff[s]*ys_dc_s)
+        #   - sum_s(ptdf[l,b]*ys_c_s)
+        #                   )
+        #   - delta <= sum_b(ptdf[l, b] *demand[b]) - sum_b(ptdf[l,b]*renewable_generation[b]) + max_line_capacities[l]
+        for l in range(self.n_lines):
+            # -------- 上界约束 --------
+            for b in range(self.n_buses):
+                ptdf_coeff = ptdf[l, b]
+
+                # sum_g(ptdf[l,b]*y_g)
+                for g in self.generators_at_bus[b]:
+                    A_ub_data.append(ptdf_coeff)
+                    A_ub_rows.append(current_row)
+                    A_ub_cols.append(self._get_var_index('y', g))
+
+                # + sum_s(ptdf[l,b]*discharge_eff[s]*ys_dc_s)
+                # - sum_s(ptdf[l, b] * ys_c_s)
+                for s in self.storages_at_bus[b]:
+                    A_ub_data.append(ptdf_coeff * discharge_eff[s])
+                    A_ub_rows.append(current_row)
+                    A_ub_cols.append(self._get_var_index('ys_dc', s))
+
+                    A_ub_data.append(-ptdf_coeff)
+                    A_ub_rows.append(current_row)
+                    A_ub_cols.append(self._get_var_index('ys_c', s))
+
+                # sum_b(ptdf[l, b] *demand[b]) - sum_b(ptdf[l,b]*renewable_generation[b])
+                b_ub[current_row] += ptdf_coeff * (demand[b] - renewable_generation[b])
+
+            # -delta
+            A_ub_data.append(-1.0)
             A_ub_rows.append(current_row)
-            A_ub_cols.append(0)  # 简化位置
+            A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = self.max_line_capacities[l] + self.delta
+            # + max_line_capacities[l]
+            b_ub[current_row] = max_line_capacities[l]
             current_row += 1
 
-        # 8. 启动约束: x - z_x <= s_up + delta
-        # 转换为: x - z_x - s_up <= delta
-        for g in range(n_g):
+            # (下界)
+            for b in range(self.n_buses):
+                ptdf_coeff = -ptdf[l, b]  # 取负号，后面都不用改
+                # sum_g(ptdf[l, b] * y_g)
+                for g in self.generators_at_bus[b]:
+                    A_ub_data.append(ptdf_coeff)
+                    A_ub_rows.append(current_row)
+                    A_ub_cols.append(self._get_var_index('y', g))
+
+                # + sum_s(ptdf[l,b]*discharge_eff[s]*ys_dc_s)
+                # - sum_s(ptdf[l, b] * ys_c_s)
+                for s in self.storages_at_bus[b]:
+                    A_ub_data.append(ptdf_coeff * discharge_eff[s])
+                    A_ub_rows.append(current_row)
+                    A_ub_cols.append(self._get_var_index('ys_dc', s))
+
+                    A_ub_data.append(-ptdf_coeff)
+                    A_ub_rows.append(current_row)
+                    A_ub_cols.append(self._get_var_index('ys_c', s))
+
+                # sum_b(ptdf[l, b] *demand[b]) - sum_b(ptdf[l,b]*renewable_generation[b])
+                b_ub[current_row] += ptdf_coeff * (demand[b] - renewable_generation[b])
+
+            # -delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            # + max_line_capacities[l]
+            b_ub[current_row] = max_line_capacities[l]
+            current_row += 1
+
+        # 8. startup_shutdown_constraints 启动约束
+        # self.x[g] - self.z_x[g] <= self.s_up[g] + self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: x - z_x - s_up - delta <= 0
+        for g in range(self.n_generators):
             A_ub_data.append(1.0)  # x[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('x', g))
@@ -842,12 +1004,18 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('s_up', g))
 
-            b_ub[current_row] = self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = 0
             current_row += 1
 
-        # 9. 关闭约束: z_x - x <= s_down + delta
+        # 9. startup_shutdown_constraints 关闭约束
+        # self.z_x[g] - self.x[g] <= self.s_down[g] + self.delta
+        #                 for g in range(self.n_generators)
         # 转换为: -x + z_x - s_down <= delta
-        for g in range(n_g):
+        for g in range(self.n_generators):
             A_ub_data.append(-1.0)  # -x[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('x', g))
@@ -860,12 +1028,21 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('s_down', g))
 
-            b_ub[current_row] = self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = 0
             current_row += 1
 
-        # 10. 上升速率约束: y - z_y <= max_rate_up * z_x + startup_rate * s_up + delta
-        # 转换为: y - z_y - max_rate_up * z_x - startup_rate * s_up <= delta
-        for g in range(n_g):
+        # 10. ramp_rate_constraints 上升速率约束
+        # self.y[g] - self.z_y[g]
+        #                 <= max_rate_up[g] * self.z_x[g]
+        #                 + startup_rate[g] * self.s_up[g]
+        #                 + self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: y - z_y - max_rate_up * z_x - startup_rate * s_up - delta <= 0
+        for g in range(self.n_generators):
             A_ub_data.append(1.0)  # y[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('y', g))
@@ -874,20 +1051,29 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('z_y', g))
 
-            A_ub_data.append(-self.max_rate_up[g])  # -max_rate_up[g] * z_x[g]
+            A_ub_data.append(-max_rate_up[g])  # -max_rate_up[g] * z_x[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('z_x', g))
 
-            A_ub_data.append(-self.startup_rate[g])  # -startup_rate[g] * s_up[g]
+            A_ub_data.append(-startup_rate[g])  # -startup_rate[g] * s_up[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('s_up', g))
 
-            b_ub[current_row] = self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = 0
             current_row += 1
 
-        # 11. 下降速率约束: z_y - y <= max_rate_down * x + shutdown_rate * s_down + delta
-        # 转换为: -y + z_y - max_rate_down * x - shutdown_rate * s_down <= delta
-        for g in range(n_g):
+        # 11. ramp_rate_constraints 下降速率约束:
+        # self.z_y[g] - self.y[g]
+        #                 <= max_rate_down[g] * self.x[g]
+        #                 + shutdown_rate[g] * self.s_down[g]
+        #                 + self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: -y + z_y - max_rate_down * x - shutdown_rate * s_down - delta <= 0
+        for g in range(self.n_generators):
             A_ub_data.append(-1.0)  # -y[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('y', g))
@@ -896,49 +1082,64 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('z_y', g))
 
-            A_ub_data.append(-self.max_rate_down[g])  # -max_rate_down[g] * x[g]
+            A_ub_data.append(-max_rate_down[g])  # -max_rate_down[g] * x[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('x', g))
 
-            A_ub_data.append(-self.shutdown_rate[g])  # -shutdown_rate[g] * s_down[g]
+            A_ub_data.append(-shutdown_rate[g])  # -shutdown_rate[g] * s_down[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('s_down', g))
 
-            b_ub[current_row] = self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = 0
             current_row += 1
 
-        # 12. 上线时间约束: sum(z_x_bs) >= min_up_times * s_down - delta
-        # 转换为: -sum(z_x_bs) + min_up_times * s_down <= delta
-        bs_index = 0
-        for g in range(n_g):
+        # 12. up_down_time_constraints 启动时间约束
+        # gp.quicksum(self.z_x_bs[g])
+        #                 >= min_up_times[g] * self.s_down[g] - self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: -sum(z_x_bs) + min_up_times * s_down - delta <= 0
+        for g in range(self.n_generators):
             for k in range(self.backsight_periods[g]):
                 A_ub_data.append(-1.0)  # -z_x_bs[g][k]
                 A_ub_rows.append(current_row)
-                A_ub_cols.append(self._get_var_index('z_x_bs', bs_index))
-                bs_index += 1
+                A_ub_cols.append(self._get_var_index('z_x_bs', k, g))
 
-            A_ub_data.append(self.min_up_times[g])  # min_up_times[g] * s_down[g]
+            A_ub_data.append(min_up_times[g])  # min_up_times[g] * s_down[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('s_down', g))
 
-            b_ub[current_row] = self.delta
+            A_ub_data.append(-1.0)
+            A_ub_cols.append(self._get_var_index('delta'))
+            A_ub_cols.append(self._get_var_index('delta'))
+
+            b_ub[current_row] = 0
             current_row += 1
 
-        # 13. 下线时间约束: (periods - sum(z_x_bs)) >= min_down_times * s_up - delta
-        # 转换为: sum(z_x_bs) - min_down_times * s_up <= periods - delta
-        bs_index = 0
-        for g in range(n_g):
+        # 13. up_down_time_constraints 停机时间约束
+        # len(self.z_x_bs[g]) - gp.quicksum(self.z_x_bs[g])
+        #                 >= min_down_times[g] * self.s_up[g] - self.delta
+        #                 for g in range(self.n_generators)
+        # 转换为: sum(z_x_bs) + min_down_times * s_up - delta <= len(self.z_x_bs[g])
+        for g in range(self.n_generators):
             for k in range(self.backsight_periods[g]):
                 A_ub_data.append(1.0)  # z_x_bs[g][k]
                 A_ub_rows.append(current_row)
-                A_ub_cols.append(self._get_var_index('z_x_bs', bs_index))
-                bs_index += 1
+                A_ub_cols.append(self._get_var_index('z_x_bs', k, g))
 
-            A_ub_data.append(-self.min_down_times[g])  # -min_down_times[g] * s_up[g]
+            A_ub_data.append(min_down_times[g])  # min_down_times[g] * s_up[g]
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('s_up', g))
 
-            b_ub[current_row] = self.backsight_periods[g] - self.delta
+            A_ub_data.append(-1.0)
+            A_ub_rows.append(current_row)
+            A_ub_cols.append(self._get_var_index('delta'))
+
+
+            b_ub[current_row] = len(self.z_x_bs[g])
             current_row += 1
 
         # 14. 割下界约束: theta >= lower_bound
@@ -947,16 +1148,83 @@ class ModelBuilder(ABC):
         A_ub_rows.append(current_row)
         A_ub_cols.append(self._get_var_index('theta'))
 
-        b_ub[current_row] = -self.lower_bound
+        b_ub[current_row] = -lower_bound
 
         # 创建稀疏矩阵
-        # A_ub = sparse.csr_matrix((A_ub_data, (A_ub_rows, A_ub_cols)),
-        #                          shape=(ub_constraint_count, total_vars))
+        A_ub = sparse.csr_matrix((A_ub_data, (A_ub_rows, A_ub_cols)),
+                                 shape=(current_row, self._get_var_len()))
 
-        # return A_ub, b_ub
+        return A_ub, b_ub
 
+    def get_inequality_cut_constrains(self, cuts_list):
+        # 初始化系数矩阵和右侧向量
+        A_ub_cut_data = []
+        A_ub_cut_rows = []
+        A_ub_cut_cols = []
+        b_cut_ub = []
 
+        current_row = 0
+        # state_variables = (
+        #             self.x
+        #             + self.y
+        #             + [var for gen_bs in self.x_bs for var in gen_bs]
+        #             + self.soc
+        #     )
+        #     for id, cut in enumerate(cuts_list):
+        #         pi = cut[:-1]
+        #         intercept = cut[-1]
+        #         self.model.addConstr(
+        #             (
+        #                     self.theta
+        #                     >= intercept + gp.LinExpr(pi, state_variables)
+        #             ),
+        #             f"cut_{id}",
+        #         )
+        # 转换为：
+        # -theta + sum(pi * state_variables) <= -intercept
+        for cut in cuts_list:
+            pi = cut[:-1]
+            intercept = cut[-1]
+            # theta
+            A_ub_cut_data.append(-1.0)
+            A_ub_cut_rows.append(current_row)
+            A_ub_cut_cols.append(self._get_var_index('theta'))
 
+            pi_index = 0
+            # x
+            for g in range(self.n_generators):
+                A_ub_cut_data.append(pi[pi_index])
+                A_ub_cut_rows.append(current_row)
+                A_ub_cut_cols.append(self._get_var_index('x'), g)
+                pi_index += 1
+            # y
+            for g in range(self.n_generators):
+                A_ub_cut_data.append(pi[pi_index])
+                A_ub_cut_rows.append(current_row)
+                A_ub_cut_cols.append(self._get_var_index('y'), g)
+                pi_index += 1
+            # x_bs
+            for g in range(self.n_generators):
+                for k in range(self.backsight_periods[g]):
+                    A_ub_cut_data.append(pi[pi_index])
+                    A_ub_cut_rows.append(current_row)
+                    A_ub_cut_cols.append(self._get_var_index('x_bs'), k, g)
+                    pi_index += 1
+            # soc
+            for s in range(self.n_storages):
+                A_ub_cut_data.append(pi[pi_index])
+                A_ub_cut_rows.append(current_row)
+                A_ub_cut_cols.append(self._get_var_index('soc'), s)
+                pi_index += 1
+
+            b_cut_ub.append(-intercept)
+
+            current_row += 1
+
+        # 创建稀疏矩阵
+        A_ub_cut = sparse.csr_matrix((A_ub_cut_data, (A_ub_cut_rows, A_ub_cut_cols)),
+                                 shape=(current_row, self._get_var_len()))
+        return A_ub_cut, b_cut_ub
 
 
     # 下面没有用到
