@@ -469,33 +469,36 @@ class ModelBuilder(ABC):
 
     def _compute_var_offsets(self):
         """根据每个变量的长度计算偏移量，赋值到self.var_offsets"""
-        n_x_bs = sum(self.backsight_periods)
         var_len = {
+            # 变量
             'x': self.n_generators,
             'y': self.n_generators,
-            'x_bs': [sum(self.backsight_periods[g]) for g in range(len(self.backsight_periods))],
-            'x_bs_p': [sum(self.backsight_periods[g]) for g in range(len(self.backsight_periods))],
-            'x_bs_n': [sum(self.backsight_periods[g]) for g in range(len(self.backsight_periods))],
+            'x_bs': [self.backsight_periods[g] for g in range(len(self.backsight_periods))],
+            'soc': self.n_storages,
+            # 局部变量
+            'x_bs_p': [self.backsight_periods[g] for g in range(len(self.backsight_periods))],
+            'x_bs_n': [self.backsight_periods[g] for g in range(len(self.backsight_periods))],
             'ys_c': self.n_storages,
             'ys_dc': self.n_storages,
             'u_c_dc': self.n_storages,
-            'soc': self.n_storages,
             'socs_p': self.n_storages,
             'socs_n': self.n_storages,
-            'z_x': self.n_generators,
-            'z_y': self.n_generators,
-            'z_x_bs': n_x_bs,
-            'z_soc': self.n_storages,
             's_up': self.n_generators,
             's_down': self.n_generators,
             'ys_p': 1,
             'ys_n': 1,
+            'delta': 1,
+            # 复制变量
+            'z_x': self.n_generators,
+            'z_y': self.n_generators,
+            'z_x_bs': [self.backsight_periods[g] for g in range(len(self.backsight_periods))],
+            'z_soc': self.n_storages,
+            # theta
             'theta': 1,
-            'delta': 1
         }
 
         current_offset = 0
-
+        self.var_offsets = {}
         for name, length in var_len.items():
             if isinstance(length, int):
                 # 普通整数变量
@@ -515,9 +518,19 @@ class ModelBuilder(ABC):
 
         self.var_len = current_offset
 
+    def get_var_column_index(self):
+        """获取变量所占用的列索引，使用这些变量可以从问题参数矩阵中抽取需要的部分"""
+        var_column_dict = {}
+        # [起始位置，结束位置） 注意结束位置应该是开区间
+        var_column_dict['X'] = [self._get_var_index('x', 0), self._get_var_index('soc', self.n_storages - 1) + 1]
+        var_column_dict['Y'] = [self._get_var_index('x_bs_p', 0, 0), self._get_var_index('delta', 0) + 1]
+        var_column_dict['Z_X'] = [self._get_var_index('z_x', 0), self._get_var_index('z_soc', self.n_storages - 1) + 1]
+        var_column_dict['theta'] = [self._get_var_index('theta', 0), self._get_var_index('theta', 0) + 1]
+
+        return var_column_dict
 
     def _get_var_index(self, var_type, index=0, g=None)->int:
-
+        """获取变量对应在向量中的索引位置"""
         if self.var_offsets is None:
             self._compute_var_offsets()
 
@@ -547,7 +560,7 @@ class ModelBuilder(ABC):
             # soc_transfer
             charge_eff: list,
             # final_soc_constraints
-            final_soc: list,
+            final_soc: list,  # 可能None
             # power_flow_constraints
             ptdf,
             max_line_capacities: list,
@@ -567,7 +580,7 @@ class ModelBuilder(ABC):
             min_down_times: list,
             # cut_lower_bound
             lower_bound: float,
-            cuts_list: list
+            cuts_list: list  # 可能None
     ):
         X_vector = self.get_var_vector()
         A_eq, b_eq = self.get_equality_constraints_matrix(
@@ -600,28 +613,36 @@ class ModelBuilder(ABC):
         return X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub
 
     def get_var_vector(self):
+        """获取变量向量"""
         X_vector = []
         X_vector.extend(self.x)
         X_vector.extend(self.y)
-        X_vector.extend([x_bs for x_bs in self.x_bs])
-        X_vector.extend([x_bs_p for x_bs_p in self.x_bs_p])
-        X_vector.extend([x_bs_n for x_bs_n in self.x_bs_n])
+        X_vector.extend([x for x_bs in self.x_bs for x in x_bs])
+        X_vector.extend(self.soc)
+
+        X_vector.extend([x for x_bs_p in self.x_bs_p for x in x_bs_p])
+        X_vector.extend([x for x_bs_n in self.x_bs_n for x in x_bs_n])
         X_vector.extend(self.ys_c)
         X_vector.extend(self.ys_dc)
         X_vector.extend(self.u_c_dc)
-        X_vector.extend(self.soc)
         X_vector.extend(self.socs_p)
         X_vector.extend(self.socs_n)
-        X_vector.extend(self.z_x)
-        X_vector.extend(self.z_y)
-        X_vector.extend([z_x_bs for z_x_bs in self.z_x_bs])
-        X_vector.extend(self.z_soc)
         X_vector.extend(self.s_up)
         X_vector.extend(self.s_down)
         X_vector.append(self.ys_p)
         X_vector.append(self.ys_n)
-        X_vector.append(self.theta)
         X_vector.append(self.delta)
+
+        X_vector.extend(self.z_x)
+        X_vector.extend(self.z_y)
+        X_vector.extend([x for z_x_bs in self.z_x_bs for x in z_x_bs])
+        X_vector.extend(self.z_soc)
+
+        X_vector.append(self.theta)
+
+        # print("X_vector: ", len(X_vector))  # 53
+        # print(self._get_var_len())  # 53
+
         return X_vector
 
 
@@ -636,6 +657,8 @@ class ModelBuilder(ABC):
 
     ):
         """等式约束的矩阵形式：A_eq * v = b_eq"""
+
+
 
         # 初始化系数矩阵和右侧向量
         A_eq_data = []
@@ -678,7 +701,7 @@ class ModelBuilder(ABC):
         A_eq_rows.append(current_row)
         A_eq_cols.append(self._get_var_index('ys_n'))
 
-        b_eq[current_row] = total_demand - total_renewable_generation
+        b_eq.append(total_demand - total_renewable_generation)
         current_row += 1
 
         # 2. SOC转移约束:
@@ -719,7 +742,7 @@ class ModelBuilder(ABC):
             A_eq_rows.append(current_row)
             A_eq_cols.append(self._get_var_index('socs_n', s))
 
-            b_eq[current_row] = 0
+            b_eq.append(0.0)
             current_row += 1
 
         # 3. up_down_time_constraints中的后视变量约束:
@@ -749,7 +772,7 @@ class ModelBuilder(ABC):
                 A_eq_rows.append(current_row)
                 A_eq_cols.append(self._get_var_index('x_bs_n', k, g))
 
-                b_eq[current_row] = 0
+                b_eq.append(0.0)
                 current_row += 1
 
         # 创建稀疏矩阵
@@ -814,7 +837,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = self.delta
+            b_ub.append(self.delta)
             current_row += 1
 
         # 2. generator_constraints 发电机最大发电量约束
@@ -834,7 +857,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 3. storage_constraints 储能最大充电速率约束
@@ -850,7 +873,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('u_c_dc', s))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 4. storage_constraints 储能最大放电速率约束
@@ -866,7 +889,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('u_c_dc', s))
 
-            b_ub[current_row] = max_discharge_rate[s]
+            b_ub.append(max_discharge_rate[s])
             current_row += 1
 
         # 5. storage_constraints 最大SOC约束
@@ -881,24 +904,25 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = max_soc[s]
+            b_ub.append(max_soc[s])
             current_row += 1
 
         # 6. final_soc_constraints 最终SOC约束
         # self.soc[s] >= final_soc[s] - self.delta
         #                 for s in range(self.n_storages)
         # 转换为: -soc - delta <= -final_soc
-        for s in range(self.n_storages):
-            A_ub_data.append(-1.0)  # -soc[s]
-            A_ub_rows.append(current_row)
-            A_ub_cols.append(self._get_var_index('soc', s))
+        if final_soc is not None:  # 只有在最后一个阶段才需要这个约束
+            for s in range(self.n_storages):
+                A_ub_data.append(-1.0)  # -soc[s]
+                A_ub_rows.append(current_row)
+                A_ub_cols.append(self._get_var_index('soc', s))
 
-            A_ub_data.append(-1.0)
-            A_ub_rows.append(current_row)
-            A_ub_cols.append(self._get_var_index('delta'))
+                A_ub_data.append(-1.0)
+                A_ub_rows.append(current_row)
+                A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = -final_soc[s]
-            current_row += 1
+                b_ub.append(-final_soc[s])
+                current_row += 1
 
         # 7. power_flow_constraints 功率流约束
         # max_line_capacities[l] + self.delta <= gp.quicksum(
@@ -923,6 +947,7 @@ class ModelBuilder(ABC):
         #   - delta <= sum_b(ptdf[l, b] *demand[b]) - sum_b(ptdf[l,b]*renewable_generation[b]) + max_line_capacities[l]
         for l in range(self.n_lines):
             # -------- 上界约束 --------
+            b_ub.append(0.0)
             for b in range(self.n_buses):
                 ptdf_coeff = ptdf[l, b]
 
@@ -952,10 +977,11 @@ class ModelBuilder(ABC):
             A_ub_cols.append(self._get_var_index('delta'))
 
             # + max_line_capacities[l]
-            b_ub[current_row] = max_line_capacities[l]
+            b_ub[current_row] += max_line_capacities[l]
             current_row += 1
 
             # (下界)
+            b_ub.append(0.0)
             for b in range(self.n_buses):
                 ptdf_coeff = -ptdf[l, b]  # 取负号，后面都不用改
                 # sum_g(ptdf[l, b] * y_g)
@@ -984,7 +1010,7 @@ class ModelBuilder(ABC):
             A_ub_cols.append(self._get_var_index('delta'))
 
             # + max_line_capacities[l]
-            b_ub[current_row] = max_line_capacities[l]
+            b_ub[current_row] += max_line_capacities[l]
             current_row += 1
 
         # 8. startup_shutdown_constraints 启动约束
@@ -1008,7 +1034,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 9. startup_shutdown_constraints 关闭约束
@@ -1032,7 +1058,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 10. ramp_rate_constraints 上升速率约束
@@ -1063,7 +1089,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 11. ramp_rate_constraints 下降速率约束:
@@ -1094,7 +1120,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 12. up_down_time_constraints 启动时间约束
@@ -1113,10 +1139,10 @@ class ModelBuilder(ABC):
             A_ub_cols.append(self._get_var_index('s_down', g))
 
             A_ub_data.append(-1.0)
-            A_ub_cols.append(self._get_var_index('delta'))
+            A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub[current_row] = 0
+            b_ub.append(0.0)
             current_row += 1
 
         # 13. up_down_time_constraints 停机时间约束
@@ -1139,7 +1165,7 @@ class ModelBuilder(ABC):
             A_ub_cols.append(self._get_var_index('delta'))
 
 
-            b_ub[current_row] = len(self.z_x_bs[g])
+            b_ub.append(len(self.z_x_bs[g]))
             current_row += 1
 
         # 14. 割下界约束: theta >= lower_bound
@@ -1147,8 +1173,17 @@ class ModelBuilder(ABC):
         A_ub_data.append(-1.0)  # -theta
         A_ub_rows.append(current_row)
         A_ub_cols.append(self._get_var_index('theta'))
+        b_ub.append(-lower_bound)
+        current_row += 1
 
-        b_ub[current_row] = -lower_bound
+        # 打印稀疏矩阵的shape
+        # print(len(A_ub_data))  # 237
+        # print(len(A_ub_rows))  # 237
+        # print(len(A_ub_cols))  # 237
+        # print(len(b_ub))  # 51
+        # print(current_row)  # 51
+
+
 
         # 创建稀疏矩阵
         A_ub = sparse.csr_matrix((A_ub_data, (A_ub_rows, A_ub_cols)),
@@ -1182,44 +1217,44 @@ class ModelBuilder(ABC):
         #         )
         # 转换为：
         # -theta + sum(pi * state_variables) <= -intercept
-        for cut in cuts_list:
-            pi = cut[:-1]
-            intercept = cut[-1]
-            # theta
-            A_ub_cut_data.append(-1.0)
-            A_ub_cut_rows.append(current_row)
-            A_ub_cut_cols.append(self._get_var_index('theta'))
+        if cuts_list is not None:  # 最后一个阶段没有cut约束
+            for cut in cuts_list:
+                pi = cut[:-1]
+                intercept = cut[-1]
+                # theta
+                A_ub_cut_data.append(-1.0)
+                A_ub_cut_rows.append(current_row)
+                A_ub_cut_cols.append(self._get_var_index('theta'))
 
-            pi_index = 0
-            # x
-            for g in range(self.n_generators):
-                A_ub_cut_data.append(pi[pi_index])
-                A_ub_cut_rows.append(current_row)
-                A_ub_cut_cols.append(self._get_var_index('x'), g)
-                pi_index += 1
-            # y
-            for g in range(self.n_generators):
-                A_ub_cut_data.append(pi[pi_index])
-                A_ub_cut_rows.append(current_row)
-                A_ub_cut_cols.append(self._get_var_index('y'), g)
-                pi_index += 1
-            # x_bs
-            for g in range(self.n_generators):
-                for k in range(self.backsight_periods[g]):
+                pi_index = 0
+                # x
+                for g in range(self.n_generators):
                     A_ub_cut_data.append(pi[pi_index])
                     A_ub_cut_rows.append(current_row)
-                    A_ub_cut_cols.append(self._get_var_index('x_bs'), k, g)
+                    A_ub_cut_cols.append(self._get_var_index('x', g))
                     pi_index += 1
-            # soc
-            for s in range(self.n_storages):
-                A_ub_cut_data.append(pi[pi_index])
-                A_ub_cut_rows.append(current_row)
-                A_ub_cut_cols.append(self._get_var_index('soc'), s)
-                pi_index += 1
+                # y
+                for g in range(self.n_generators):
+                    A_ub_cut_data.append(pi[pi_index])
+                    A_ub_cut_rows.append(current_row)
+                    A_ub_cut_cols.append(self._get_var_index('y', g))
+                    pi_index += 1
+                # x_bs
+                for g in range(self.n_generators):
+                    for k in range(self.backsight_periods[g]):
+                        A_ub_cut_data.append(pi[pi_index])
+                        A_ub_cut_rows.append(current_row)
+                        A_ub_cut_cols.append(self._get_var_index('x_bs', k, g))
+                        pi_index += 1
+                # soc
+                for s in range(self.n_storages):
+                    A_ub_cut_data.append(pi[pi_index])
+                    A_ub_cut_rows.append(current_row)
+                    A_ub_cut_cols.append(self._get_var_index('soc', s))
+                    pi_index += 1
 
-            b_cut_ub.append(-intercept)
-
-            current_row += 1
+                b_cut_ub.append(-intercept)
+                current_row += 1
 
         # 创建稀疏矩阵
         A_ub_cut = sparse.csr_matrix((A_ub_cut_data, (A_ub_cut_rows, A_ub_cut_cols)),

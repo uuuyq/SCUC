@@ -1,16 +1,14 @@
-import datetime
-import math
 import time
 from statistics import mean
 import gurobipy as gp
 import numpy as np
 from scipy import stats
 
-# from NN_torch_24.compare_plot1 import time_result
 from . import scenarios, ucmodelclassical, parameters, outermodel, dualsolver
 from .result_storage import result_Dict
 import os
 import matplotlib.pyplot as plt
+import pickle as pkl
 
 
 
@@ -945,6 +943,21 @@ class Algorithm:
 
                     dual_multipliers.append(dm)
 
+                    # 输出解
+                    # self.logger.info(f"stage: {t}  n: {n}")
+                    # self.logger.info(f"x: {[x.x for x in uc_fw.x]}")
+                    # self.logger.info(f"y: {[y.x for y in uc_fw.y]}")
+                    # self.logger.info(f"x_bs: {[x.x for x_bs in uc_fw.x_bs for x in x_bs]}")
+                    # self.logger.info(f"soc: {[soc.x for soc in uc_fw.soc]}")
+                    # self.logger.info(f"socs_p: {[soc.x for soc in uc_fw.socs_p]}")
+                    # self.logger.info(f"socs_n: {[soc.x for soc in uc_fw.socs_n]}")
+                    # self.logger.info(f"theta: {uc_fw.theta.x}")
+                    # self.logger.info(f"delta: {uc_fw.delta.x}")
+                    #
+                    # self.logger.info(f"dual: {dm}")
+                    # if t == 1 and k == 0:
+                    #     uc_fw.model.write("SB_model.lp")
+
                     dual_model = ucmodelclassical.ClassicalModel(
                         self.problem_params.n_buses,
                         self.problem_params.n_lines,
@@ -954,7 +967,6 @@ class Algorithm:
                         self.problem_params.storages_at_bus,
                         self.problem_params.backsight_periods,
                     )
-
                     dual_model: ucmodelclassical.ClassicalModel = (
                         self.add_problem_constraints(dual_model, t, n)
                     )
@@ -999,7 +1011,7 @@ class Algorithm:
                 self.cuts_storage.add(i, k, t - 1, benders_cut)
                 self.x_storage.add(i, k, t - 1, trial_point)
                 # self.logger.info(f"benders_pi_intercept: {benders_cut}")
-        self.cut_add_flag = True
+            self.cut_add_flag = True
 
 
     def create_inner_model(self, t, n, relax=False):
@@ -1345,6 +1357,84 @@ class Algorithm:
             )
         return model_builder
 
+    def add_problem_constraints_matrix(
+        self,
+        model_builder: ucmodelclassical.ClassicalModel,
+        stage: int,
+        realization: int,
+        # iteration: int,
+    ):
+
+        if stage == self.problem_params.n_stages - 1:
+            init_soc_trial_point = self.problem_params.init_soc_trial_point
+        else:
+            init_soc_trial_point = None
+
+        if stage < self.problem_params.n_stages - 1 and self.cut_add_flag:
+            # 添加cut约束
+            cuts_list = self.cuts_storage.get_values_by_t(stage)
+        else:
+            cuts_list = None
+
+
+        X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub = model_builder.get_problem_constrains_matrix(
+            # balance_constraints
+            total_demand=sum(self.problem_params.p_d[stage][realization]),
+            total_renewable_generation=sum(self.problem_params.re[stage][realization]),
+            discharge_eff=self.problem_params.eff_dc,
+            # generator_constraints
+            min_generation=self.problem_params.pg_min,
+            max_generation=self.problem_params.pg_max,
+            # storage_constraints
+            max_charge_rate=self.problem_params.rc_max,
+            max_discharge_rate=self.problem_params.rdc_max,
+            max_soc=self.problem_params.soc_max,
+            # soc_transfer
+            charge_eff=self.problem_params.eff_c,
+            # final_soc_constraints
+            final_soc=init_soc_trial_point,
+            # power_flow_constraints
+            ptdf=self.problem_params.ptdf,
+            max_line_capacities=self.problem_params.pl_max,
+            demand=self.problem_params.p_d[stage][realization],
+            renewable_generation=self.problem_params.re[stage][realization],
+            # ramp_rate_constraints
+            max_rate_up=self.problem_params.r_up,
+            max_rate_down=self.problem_params.r_down,
+            startup_rate=self.problem_params.r_su,
+            shutdown_rate=self.problem_params.r_sd,
+            # up_down_time_constraints
+            min_up_times=self.problem_params.min_up_time,
+            min_down_times=self.problem_params.min_down_time,
+            # cut_lower_bound
+            lower_bound=self.problem_params.cut_lb[stage],
+            cuts_list=cuts_list
+        )
+        # 添加等式约束 A_eq * X_vector == b_eq
+        for row in range(A_eq.shape[0]):
+            expr = 0
+            for idx, col in enumerate(A_eq[row].nonzero()[1]):  # 非零列
+                expr += A_eq[row, col] * X_vector[col]
+            model_builder.model.addConstr(expr == b_eq[row], name=f"eq_constrains_{row}")
+
+        # 添加不等式约束 A_ub * X_vector <= b_ub
+        for row in range(A_ub.shape[0]):
+            expr = 0
+            for idx, col in enumerate(A_ub[row].nonzero()[1]):
+                expr += A_ub[row, col] * X_vector[col]
+            model_builder.model.addConstr(expr <= b_ub[row], name=f"ub_constrains_{row}")
+
+        # 添加不等式割约束 A_ub_cut * X_vector <= b_cut_ub
+        for row in range(A_ub_cut.shape[0]):
+            expr = 0
+            for idx, col in enumerate(A_ub_cut[row].nonzero()[1]):
+                expr += A_ub_cut[row, col] * X_vector[col]
+            model_builder.model.addConstr(expr <= b_cut_ub[row], name=f"ub_cut_constrains_{row}")
+
+        model_builder.model.update()
+
+        return model_builder, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub
+
     def add_z_Var_constrains(self, inner_model: ucmodelclassical.ClassicalModel):
         inner_model.add_z_var_constrains(self.problem_params.soc_max, self.problem_params.pg_min, self.problem_params.pg_max)
         return inner_model
@@ -1636,137 +1726,60 @@ class Algorithm:
         return x_tensor
 
     '''IFR算法'''
+    # 测试结果，只有第一个阶段中的数值有一些差距，考虑精度问题，但不知道是哪里的精度问题导致？
+    def test_matrix(self):
+        # 采样 每次迭代只采一个样本
+        samples = self.sc_sampler.generate_samples(1)
+        self.logger.info("Samples: %s", samples)
+        # Forward pass
+        self.logger.info("Forward pass")
+        v_opt_k = self.forward_pass(0, samples)
+        # Backward pass
+        self.logger.info("Backward benders pass")
+        self.backward_benders(1, samples)
+
+        self.cut_add_flag = False
+        self.cuts_storage = result_Dict("cuts_storage1")
+        self.x_storage = result_Dict("x_storage1")
+
+        self.logger.info("Backward benders matrix pass")
+        self.backward_benders_matrix(1, samples)
+
+    def get_dual_values(self):
+        num_cuts = 15
+        for i in range(num_cuts + 1):
+            # 采样 每次迭代只采一个样本
+            samples = self.sc_sampler.generate_samples(1)
+            self.logger.info("Samples: %s", samples)
+            # Forward pass
+            self.logger.info(f"Forward pass iter: {i}")
+            v_opt_k = self.forward_pass(i, samples)
+            # Backward pass
+            if i < num_cuts:
+                self.logger.info(f"Backward benders pass iter: {i}")
+                self.backward_benders_matrix(i + 1, samples, dual_sotrage_flag=False)
+            else:
+                # 检查cuts个数
+                if len(self.cuts_storage.get_values_by_t(0)) != num_cuts:
+                    raise ValueError("cuts个数不足")
+                self.dual_values_dict = {}
+                self.logger.info("Backward benders pass")
+                self.backward_benders_matrix(i + 1, samples, dual_sotrage_flag=True)
+                # 保存到train_data_path中
+                with open(os.path.join(self.train_data_path, "dual_values_dict.pkl"), 'wb') as f:
+                    pkl.dump(self.dual_values_dict, f)
+
+
 
     def run_IFR(self, ):
 
-        # SB
-        n_samples = self.n_samples_primary
-        samples = self.sc_sampler.generate_samples(
-            n_samples
-        )  # samples：[[1,2,5,3][]] len(samples)代表前向步骤执行次数（采样次数）,每个其中数字代表realization序号
-        self.logger.info("Samples: %s", samples)
-
-        # Forward pass
-        self.logger.info("Forward pass")
-        v_opt_k = self.forward_pass_IFR(0, samples)
-
-        # # Statistical upper bound
-        # v_upper_l, v_upper_r = self.statistical_upper_bound(
-        #     v_opt_k, n_samples
-        # )
-        #
-        # Backward pass
-        self.logger.info("Backward benders pass")
-        self.backward_benders_IFR(1, samples)
-
-        # Lower bound
-        # return v_lower, mean(v_opt_k), v_upper_l, v_upper_r
-
-    def forward_pass_IFR(self, iteration: int, samples: list) -> list:
-        i = iteration  # 从0开始
-        n_samples = len(samples)
-        v_opt_k = []
-
-        for k in range(n_samples):
-            # t = -1对应的状态值
-            x_trial_point = self.problem_params.init_x_trial_point
-            y_trial_point = self.problem_params.init_y_trial_point
-            x_bs_trial_point = self.problem_params.init_x_bs_trial_point
-            soc_trial_point = self.problem_params.init_soc_trial_point
-
-            v_opt_k.append(0)
-            #使用samples的方式进一步使每次迭代中的前向路径都不同
-            for t, n in zip(range(self.problem_params.n_stages), samples[k]):
-
-                # Create forward model
-                # 模型定义中添加了问题所需要的变量，x(前向过程中x为二元变量)，z
-                uc_fw = ucmodelclassical.ClassicalModel(
-                    self.problem_params.n_buses,
-                    self.problem_params.n_lines,
-                    self.problem_params.n_gens,
-                    self.problem_params.n_storages,
-                    self.problem_params.gens_at_bus,
-                    self.problem_params.storages_at_bus,
-                    self.problem_params.backsight_periods,
-                    lp_relax=False
-                )
-
-                uc_fw: ucmodelclassical.ClassicalModel = (
-                    # 问题约束中没有Xa(n),转换为z与Xn的约束
-                    self.add_problem_constraints(uc_fw, t, n)
-                )
-                # 目标函数
-                uc_fw.add_objective(self.problem_params.cost_coeffs)
-                '''
-                下边就是计算z与trial_point的差值relaxed_terms，前向过程需要relaxed_terms=0
-                '''
-                uc_fw.calculate_relaxed_terms(
-                    x_trial_point,
-                    y_trial_point,
-                    x_bs_trial_point,
-                    soc_trial_point,
-                )
-                # 置0
-                uc_fw.zero_relaxed_terms()
-
-                # 模型输出
-                path = r'D:\Desktop\SCUC\SCUC\ifr_data\model'
-                uc_fw.model.write(os.path.join(path, f"forward_model_{i}_{k}_{t}.lp"))
+        pass
 
 
-                # Solve problem
-                uc_fw.disable_output()
-                uc_fw.model.optimize()
-                if uc_fw.model.status != 2:
-                    self.logger.info(f"model.status {uc_fw.model.status}")
-
-                try:
-                    # 获取结果
-                    x_kt = [x_g.x for x_g in uc_fw.x]
-                    y_kt = [y_g.x for y_g in uc_fw.y]
-                    x_bs_kt = [
-                        [x_bs.x for x_bs in x_bs_g] for x_bs_g in uc_fw.x_bs
-                    ]
-                    soc_kt = [soc_s.x for soc_s in uc_fw.soc]
-                except AttributeError:
-                    print("uc_fw.model 求解错误")
-                    uc_fw.model.write("model.lp")
-                    uc_fw.model.computeIIS()
-                    uc_fw.model.write("model.ilp")
-                    raise
 
 
-                # Value of stage t objective function
-                v_value_function = uc_fw.model.getObjective().getValue()
-                v_opt_kt = v_value_function - uc_fw.theta.x
-                v_opt_k[-1] += v_opt_kt
 
-                # theta_hat = theta_{t-1}=obj_t
-                # theta_value = v_value_function
-                theta_value = uc_fw.theta.x
-
-                x_trial_point = x_kt
-                y_trial_point = y_kt
-                if any(x_bs_kt):
-                    # 更新bs
-                    x_bs_trial_point = [
-                        [x_trial_point[g]] + x_bs_kt[g][:-1]
-                        for g in range(self.problem_params.n_gens)
-                    ]
-                soc_trial_point = soc_kt
-
-                # x_bs_trial_point_one_dim = [item for sublist in x_bs_trial_point for item in sublist]
-                # [X + theta]
-                stage_result = []
-                stage_result.append(x_kt)
-                stage_result.append(y_kt)
-                stage_result.append(x_bs_trial_point)
-                stage_result.append(soc_kt)
-                stage_result.append(theta_value)
-                self.forward_result.add(i, k, t, stage_result)
-        return v_opt_k
-
-    def backward_benders_IFR(self, iteration: int, samples: list) -> None:
+    def backward_benders_matrix(self, iteration: int, samples: list, dual_sotrage_flag: bool = False) -> None:
         i = iteration
         n_samples = len(samples)
         for t in reversed(range(1, self.problem_params.n_stages)):
@@ -1804,8 +1817,8 @@ class Algorithm:
                         lp_relax=True,
                     )
 
-                    uc_fw: ucmodelclassical.ClassicalModel = (
-                        self.add_problem_constraints(uc_fw, t, n)
+                    uc_fw, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub = (
+                        self.add_problem_constraints_matrix(uc_fw, t, n)
                     )
 
                     uc_fw.add_objective(self.problem_params.cost_coeffs)
@@ -1820,13 +1833,32 @@ class Algorithm:
 
                     uc_fw.model.optimize()
 
-                    copy_constrs = uc_fw.sddip_copy_constrs
 
-                    # 模型输出
-                    path = r'D:\Desktop\SCUC\SCUC\ifr_data\model'
-                    uc_fw.model.write(os.path.join(path, f"benders_model_{i}_{k}_{t}.lp"))
+                    if dual_sotrage_flag:
+                        # 获取对偶值
+                        dual_values_eq = []  # 平等约束
+                        dual_values_ub = []  # 不等式约束
+                        dual_values_cut = []  # 割约束
+                        # 1. 获取平等约束的对偶值
+                        for row in range(A_eq.shape[0]):
+                            constr = uc_fw.model.getConstrByName(f"eq_constrains_{row}")
+                            dual_values_eq.append(constr.Pi)
+                        # 2. 获取不等式约束对偶值
+                        for row in range(A_ub.shape[0]):
+                            constr = uc_fw.model.getConstrByName(f"ub_constrains_{row}")
+                            dual_values_ub.append(constr.Pi)
+                        # 3. 获取不等式割约束对偶值
+                        for row in range(A_ub_cut.shape[0]):
+                            constr = uc_fw.model.getConstrByName(f"ub_cut_constrains_{row}")
+                            dual_values_cut.append(constr.Pi)
+
+                        self.dual_values_dict[t] = [dual_values_eq, dual_values_ub, dual_values_cut]
+
+
 
                     dm = []
+
+                    copy_constrs = uc_fw.sddip_copy_constrs
 
                     try:
                         for constr in copy_constrs:
@@ -1839,6 +1871,22 @@ class Algorithm:
 
                     dual_multipliers.append(dm)
 
+                    # 输出解
+                    # self.logger.info(f"stage: {t}  n: {n}")
+                    # self.logger.info(f"x: {[x.x for x in uc_fw.x]}")
+                    # self.logger.info(f"y: {[y.x for y in uc_fw.y]}")
+                    # self.logger.info(f"x_bs: {[x.x for x_bs in uc_fw.x_bs for x in x_bs]}")
+                    # self.logger.info(f"soc: {[soc.x for soc in uc_fw.soc]}")
+                    # self.logger.info(f"socs_p: {[soc.x for soc in uc_fw.socs_p]}")
+                    # self.logger.info(f"socs_n: {[soc.x for soc in uc_fw.socs_n]}")
+                    # self.logger.info(f"theta: {uc_fw.theta.x}")
+                    # self.logger.info(f"delta: {uc_fw.delta.x}")
+                    #
+                    # self.logger.info(f"dual: {dm}")
+
+                    # if t == 1 and k == 0:
+                    #     uc_fw.model.write("IFR_model.lp")
+
                     dual_model = ucmodelclassical.ClassicalModel(
                         self.problem_params.n_buses,
                         self.problem_params.n_lines,
@@ -1848,8 +1896,8 @@ class Algorithm:
                         self.problem_params.storages_at_bus,
                         self.problem_params.backsight_periods,
                     )
-
                     dual_model: ucmodelclassical.ClassicalModel = (
+
                         self.add_problem_constraints(dual_model, t, n)
                     )
                     dual_model.add_objective(self.problem_params.cost_coeffs)
@@ -1860,18 +1908,6 @@ class Algorithm:
                         x_bs_trial_point,
                         soc_trial_point,
                     )
-
-                    # copy_terms = dual_model.relaxed_terms
-
-                    # (
-                    #     _,
-                    #     dual_value,
-                    # ) = self.dual_solver.get_subgradient_and_value(
-                    #     dual_model.model,
-                    #     dual_model.objective_terms,
-                    #     copy_terms,
-                    #     dm,
-                    # )
 
                     total_objective = dual_model.objective_terms + gp.quicksum(
                         dual_model.relaxed_terms[i] * dm[i] for i in range(len(dm))
@@ -1893,5 +1929,4 @@ class Algorithm:
                 self.cuts_storage.add(i, k, t - 1, benders_cut)
                 self.x_storage.add(i, k, t - 1, trial_point)
                 # self.logger.info(f"benders_pi_intercept: {benders_cut}")
-        self.cut_add_flag = True
-
+            self.cut_add_flag = True

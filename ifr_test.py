@@ -61,7 +61,7 @@ def running(sample_index, log_file, train_data_path):
 
 
     try:
-        algo.run_IFR()
+        algo.get_dual_values()
     except KeyboardInterrupt:
         logger.warning("Shutdown request ... exiting")
 
