@@ -1375,9 +1375,11 @@ class Algorithm:
             cuts_list = self.cuts_storage.get_values_by_t(stage)
         else:
             cuts_list = None
+        # theta 的下界约束  直接写入模型中
+        model_builder.add_cut_lower_bound(self.problem_params.cut_lb[stage])
 
 
-        X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub = model_builder.get_problem_constrains_matrix(
+        X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_ub_cut = model_builder.get_problem_constrains_matrix(
             # balance_constraints
             total_demand=sum(self.problem_params.p_d[stage][realization]),
             total_renewable_generation=sum(self.problem_params.re[stage][realization]),
@@ -1407,7 +1409,6 @@ class Algorithm:
             min_up_times=self.problem_params.min_up_time,
             min_down_times=self.problem_params.min_down_time,
             # cut_lower_bound
-            lower_bound=self.problem_params.cut_lb[stage],
             cuts_list=cuts_list
         )
         # 添加等式约束 A_eq * X_vector == b_eq
@@ -1423,17 +1424,23 @@ class Algorithm:
             for idx, col in enumerate(A_ub[row].nonzero()[1]):
                 expr += A_ub[row, col] * X_vector[col]
             model_builder.model.addConstr(expr <= b_ub[row], name=f"ub_constrains_{row}")
-
-        # 添加不等式割约束 A_ub_cut * X_vector <= b_cut_ub
+        # 添加不等式割约束 A_ub_cut * X_vector <= b_ub_cut
         for row in range(A_ub_cut.shape[0]):
             expr = 0
             for idx, col in enumerate(A_ub_cut[row].nonzero()[1]):
                 expr += A_ub_cut[row, col] * X_vector[col]
-            model_builder.model.addConstr(expr <= b_cut_ub[row], name=f"ub_cut_constrains_{row}")
+            # print(expr)
+            # print(b_ub_cut[row])
+            model_builder.model.addConstr(expr <= b_ub_cut[row], name=f"ub_cut_constrains_{row}")
 
         model_builder.model.update()
 
-        return model_builder, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub
+        # 转换为数组
+        A_eq = A_eq.toarray()
+        A_ub = A_ub.toarray()
+        A_ub_cut = A_ub_cut.toarray()
+
+        return model_builder, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_ub_cut
 
     def add_z_Var_constrains(self, inner_model: ucmodelclassical.ClassicalModel):
         inner_model.add_z_var_constrains(self.problem_params.soc_max, self.problem_params.pg_min, self.problem_params.pg_max)
@@ -1747,7 +1754,7 @@ class Algorithm:
 
     def get_dual_values(self):
         num_cuts = 15
-        for i in range(num_cuts + 1):
+        for i in range(num_cuts):
             # 采样 每次迭代只采一个样本
             samples = self.sc_sampler.generate_samples(1)
             self.logger.info("Samples: %s", samples)
@@ -1755,12 +1762,12 @@ class Algorithm:
             self.logger.info(f"Forward pass iter: {i}")
             v_opt_k = self.forward_pass(i, samples)
             # Backward pass
-            if i < num_cuts:
+            if i < num_cuts - 1:
                 self.logger.info(f"Backward benders pass iter: {i}")
                 self.backward_benders_matrix(i + 1, samples, dual_sotrage_flag=False)
             else:
                 # 检查cuts个数
-                if len(self.cuts_storage.get_values_by_t(0)) != num_cuts:
+                if len(self.cuts_storage.get_values_by_t(0)) != num_cuts - 1:
                     raise ValueError("cuts个数不足")
                 self.dual_values_dict = {}
                 self.logger.info("Backward benders pass")
@@ -1772,17 +1779,205 @@ class Algorithm:
 
 
     def run_IFR(self, ):
+        """执行IFR算法，得到近似的cut"""
 
-        pass
+        num_cuts = 15
+
+        with open(os.path.join(self.train_data_path, "dual_values_dict.pkl"), 'rb') as f:
+            dual_values_dict = pkl.load(f)
+
+        # self.n_stages
+        # 最后一个阶段，使用SB求解得到num_cuts 个cut
+        for i in range(num_cuts):
+            # 采样 每次迭代只采一个样本
+            samples = self.sc_sampler.generate_samples(1)
+            self.logger.info("Samples: %s", samples)
+            # Forward pass  前向都需要从前往后，只能使用全阶段的forward计算
+            self.logger.info(f"Forward pass iter: {i}")
+            v_opt_k = self.forward_pass(i, samples)
+            # Backward pass
+            self.logger.info(f"Backward benders pass iter: {i}")
+            # 执行T-1阶段的后向，计算得到关于x_{T-2}阶段的cut
+            self.backward_benders_matrix(iteration=i + 1, samples=samples, stage=self.problem_params.n_stages - 1, dual_sotrage_flag=False)
+
+        # 前面的阶段
+        self.IFR(dual_values_dict)
+
+    def IFR(self, dual_values_dict):
+
+
+        # [T-2, 1]
+        for t in reversed(range(1, self.problem_params.n_stages - 1)):
+            n_realizations = self.problem_params.n_realizations_per_stage[t]
+
+            # 获取标准对偶值
+            dual_values = dual_values_dict[t]
+            dual_values_eq = dual_values[0]  # 平等约束
+            dual_values_ub = dual_values[1]  # 不等式约束
+            dual_values_cut = dual_values[2]  # 割约束
+
+            # 创建问题模型，用于提取矩阵参数
+            alpha_list = []
+            beta_list = []
+            for n in range(n_realizations):
+                # Create forward model
+                uc_fw = ucmodelclassical.ClassicalModel(
+                    self.problem_params.n_buses,
+                    self.problem_params.n_lines,
+                    self.problem_params.n_gens,
+                    self.problem_params.n_storages,
+                    self.problem_params.gens_at_bus,
+                    self.problem_params.storages_at_bus,
+                    self.problem_params.backsight_periods,
+                    lp_relax=True,
+                )
+
+                uc_fw, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_ub_cut = (
+                    self.add_problem_constraints_matrix(uc_fw, t, n)  # n对应的负荷场景，会影响到b_eq
+                )
+                # 只有一行
+                A_obj = uc_fw.get_obj_coefficients(self.problem_params.cost_coeffs)
+
+                var_column_dict = uc_fw.get_var_column_index()
+                X_column = var_column_dict['X']
+                Y_column = var_column_dict['Y']
+                Z_X_column = var_column_dict['Z_X']
+                theta_column = var_column_dict['theta']
+                # eq
+                A_eq_X = A_eq[:, X_column[0]: X_column[1]]
+                A_eq_Y = A_eq[:, Y_column[0]: Y_column[1]]
+                A_eq_Z_X = A_eq[:, Z_X_column[0]: Z_X_column[1]]
+                # ub
+                A_ub_X = A_ub[:, X_column[0]: X_column[1]]
+                A_ub_Y = A_ub[:, Y_column[0]: Y_column[1]]
+                A_ub_Z_X = A_ub[:, Z_X_column[0]: Z_X_column[1]]
+                # cut
+                A_ub_cut_X = A_ub_cut[:, X_column[0]: X_column[1]]
+                A_ub_cut_theta = A_ub_cut[:, theta_column[0]: theta_column[1]]
+                # obj
+                A_obj_X = A_obj[:, X_column[0]: X_column[1]]
+                A_obj_Y = A_obj[:, Y_column[0]: Y_column[1]]
+                A_obj_theta = A_obj[:, theta_column[0]: theta_column[1]]
+
+                # 创建二次问题模型
+                IFR_model = gp.Model("IFR model")
+                IFR_model.setParam("OutputFlag", 0)
+                # 对偶变量
+                pi_eq = []
+                pi_ub = []
+                pi_cut = []
+                for i in range(len(dual_values_eq)):
+                    pi_eq.append(IFR_model.addVar(
+                        vtype=gp.GRB.CONTINUOUS,
+                        name=f"pi_eq_{i + 1}",
+                    ))
+                for i in range(len(dual_values_ub)):
+                    pi_ub.append(IFR_model.addVar(
+                        vtype=gp.GRB.CONTINUOUS,
+                        lb=0,
+                        name=f"pi_ub_{i + 1}",
+                    ))
+                for i in range(len(dual_values_cut)):
+                    pi_cut.append(IFR_model.addVar(
+                        vtype=gp.GRB.CONTINUOUS,
+                        lb=0,
+                        name=f"pi_cut_{i + 1}",
+                    ))
+                IFR_model.update()
+                # 驻点约束
+                # X向量
+                # TODO 后面的阶段只有一个cut应该怎么搞？？
+                expr_X = [
+                    A_obj_X[0, i] +
+                    gp.quicksum(pi_eq[j] * A_eq_X[j, i] for j in range(len(pi_eq))) +
+                    gp.quicksum(pi_ub[j] * A_ub_X[j, i] for j in range(len(pi_ub))) +
+                    gp.quicksum(pi_cut[j] * A_ub_cut_X[j, i] for j in range(len(pi_cut)))
+                    for i in range(len(A_obj_X[0]))
+                ]
+                # Y向量
+                expr_Y = [
+                    A_obj_Y[0, i] +
+                    gp.quicksum(pi_eq[j] * A_eq_Y[j, i] for j in range(len(pi_eq))) +
+                    gp.quicksum(pi_ub[j] * A_ub_Y[j, i] for j in range(len(pi_ub)))
+                    for i in range(len(A_obj_Y[0]))
+                ]
+
+                # print("A_obj_theta", A_obj_theta)
+                # print("A_ub_cut_theta", A_ub_cut_theta)
+                # theta
+                expr_theta = A_obj_theta[0, 0] + gp.quicksum(pi_cut[j] * A_ub_cut_theta[j] for j in range(len(pi_cut)))
+
+                expr_pi_eq = [dual_values_eq[i] - pi_eq[i] for i in range(len(dual_values_eq))]
+                expr_pi_ub = [dual_values_ub[i] - pi_ub[i] for i in range(len(dual_values_ub))]
+                expr_pi_cut = [dual_values_cut[i] - pi_cut[i] for i in range(len(dual_values_cut))]
+                IFR_model.update()
+
+                # 权重
+                w_X = 1.0
+                w_Y = 1.0
+                w_theta = 1.0
+                w_pi_eq = 1.0
+                w_pi_ub = 1.0
+                w_pi_cut = 1.0
+                IFR_model.setObjective(w_X * gp.quicksum(x * x for x in expr_X) + w_Y * gp.quicksum(x * x for x in expr_Y)
+                                       + w_theta * (expr_theta * expr_theta) + w_pi_eq * gp.quicksum(x * x for x in expr_pi_eq)
+                                       + w_pi_ub * gp.quicksum(x * x for x in expr_pi_ub) + w_pi_cut * gp.quicksum(x * x for x in expr_pi_cut),
+                                       gp.GRB.MINIMIZE)
+                IFR_model.update()
+                IFR_model.optimize()
+
+                pi_eq_value = [pi_eq[i].x for i in range(len(pi_eq))]
+                pi_ub_value = [pi_ub[i].x for i in range(len(pi_ub))]
+                pi_cut_value = [pi_cut[i].x for i in range(len(pi_cut))]
+                # print(pi_eq_value)
+                # print(pi_ub_value)
+                # print(pi_cut_value)
+                # print(A_eq_Z_X)
+                # print(A_ub_Z_X)
+                # print(b_eq)
+                # print(b_ub) # !!!
+                # print(b_ub_cut)
+
+                # 根据计算出的pi值，计算cut
+                alpha = [sum(pi_eq_value[j] * A_eq_Z_X[j, i] for j in range(len(pi_eq_value))) +
+                         sum(pi_ub_value[j] * A_ub_Z_X[j, i] for j in range(len(pi_ub_value)))
+                         for i in range(len(A_eq_Z_X[0]))]
+                beta = (-sum(pi_eq_value[i] * b_eq[i] for i in range(len(pi_eq_value)))
+                        - sum(pi_ub_value[i] * b_ub[i] for i in range(len(pi_ub_value)))
+                        - sum(pi_cut_value[i] * b_ub_cut[i] for i in range(len(pi_cut_value))))
+                alpha_list.append(alpha)
+                beta_list.append(beta)
+            # 对alpha 和beta取均值
+            alpha_mean = np.mean(np.array(alpha_list), axis=0).tolist()
+            beta_mean = np.mean(np.array(beta_list))
+            benders_cut = alpha_mean + [beta_mean]
+            self.logger.info(f"Benders cut: {benders_cut}")
+            self.logger.info(f"Benders cut: {len(benders_cut)}")
+            self.cuts_storage.add(1, 0, t - 1, benders_cut)
 
 
 
 
 
-    def backward_benders_matrix(self, iteration: int, samples: list, dual_sotrage_flag: bool = False) -> None:
+
+
+
+
+
+
+        return
+
+
+
+
+    def backward_benders_matrix(self, iteration: int, samples: list, stage: int = None, dual_sotrage_flag: bool = False) -> None:
         i = iteration
         n_samples = len(samples)
-        for t in reversed(range(1, self.problem_params.n_stages)):
+        if stage is None:
+            stages = reversed(range(1, self.problem_params.n_stages))  # 倒序计算所有阶段
+        else:
+            stages = [stage]  # 仅计算一个阶段
+        for t in stages:
             for k in range(n_samples):
                 n_realizations = self.problem_params.n_realizations_per_stage[
                     t
@@ -1817,7 +2012,7 @@ class Algorithm:
                         lp_relax=True,
                     )
 
-                    uc_fw, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub = (
+                    uc_fw, X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_ub_cut = (
                         self.add_problem_constraints_matrix(uc_fw, t, n)
                     )
 

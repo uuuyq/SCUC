@@ -215,7 +215,7 @@ class ModelBuilder(ABC):
         self.model.update()
 
 
-    def add_objective(self, coefficients: list) -> None:
+    def add_objective(self, coefficients: list):
         # x_bs_p = []
         # x_bs_n = []
         # for g in range(self.n_generators):
@@ -579,7 +579,7 @@ class ModelBuilder(ABC):
             min_up_times: list,
             min_down_times: list,
             # cut_lower_bound
-            lower_bound: float,
+            # lower_bound: float,
             cuts_list: list  # 可能None
     ):
         X_vector = self.get_var_vector()
@@ -607,10 +607,10 @@ class ModelBuilder(ABC):
             shutdown_rate,
             min_up_times,
             min_down_times,
-            lower_bound
+            # lower_bound
         )
-        A_ub_cut, b_cut_ub = self.get_inequality_cut_constrains(cuts_list)
-        return X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_cut_ub
+        A_ub_cut, b_ub_cut = self.get_inequality_cut_constrains(cuts_list)
+        return X_vector, A_eq, b_eq, A_ub, b_ub, A_ub_cut, b_ub_cut
 
     def get_var_vector(self):
         """获取变量向量"""
@@ -644,6 +644,103 @@ class ModelBuilder(ABC):
         # print(self._get_var_len())  # 53
 
         return X_vector
+
+    def get_obj_coefficients(self, coefficients: list):
+        """获取目标函数参数向量"""
+        penalty = coefficients[-1]
+        x_bs_p = [x for g in range(self.n_generators) for x in self.x_bs_p[g]]
+
+        coefficients = (
+                coefficients
+                + [penalty] * (2 * self.n_storages + 2 * len(x_bs_p) + 1)
+                + [1]
+        )
+        # variables = (
+        #         self.y
+        #         + self.s_up
+        #         + self.s_down
+        #         + [self.ys_p, self.ys_n]
+        #         + self.socs_p
+        #         + self.socs_n
+        #         + x_bs_p
+        #         + x_bs_n
+        #         + [self.delta]
+        #         + [self.theta]
+        # )
+        # 初始化系数矩阵和右侧向量
+        A_obj_data = []
+        A_obj_rows = []
+        A_obj_cols = []
+        # 约束对应行数
+        current_row = 0
+        index = 0  # coefficients索引
+        for g in range(self.n_generators):
+            A_obj_data.append(coefficients[index])
+            A_obj_rows.append(current_row)
+            A_obj_cols.append(self._get_var_index('y', g))
+            index += 1
+        for g in range(self.n_generators):
+            A_obj_data.append(coefficients[index])
+            A_obj_rows.append(current_row)
+            A_obj_cols.append(self._get_var_index('s_up', g))
+            index += 1
+        for g in range(self.n_generators):
+            A_obj_data.append(coefficients[index])
+            A_obj_rows.append(current_row)
+            A_obj_cols.append(self._get_var_index('s_down', g))
+            index += 1
+
+        A_obj_data.append(coefficients[index])
+        A_obj_rows.append(current_row)
+        A_obj_cols.append(self._get_var_index('ys_p', 0))
+        index += 1
+
+        A_obj_data.append(coefficients[index])
+        A_obj_rows.append(current_row)
+        A_obj_cols.append(self._get_var_index('ys_n', 0))
+        index += 1
+
+        for s in range(self.n_storages):
+            A_obj_data.append(coefficients[index])
+            A_obj_rows.append(current_row)
+            A_obj_cols.append(self._get_var_index('socs_p', s))
+            index += 1
+        for s in range(self.n_storages):
+            A_obj_data.append(coefficients[index])
+            A_obj_rows.append(current_row)
+            A_obj_cols.append(self._get_var_index('socs_n', s))
+            index += 1
+        for g in range(self.n_generators):
+            for k in range(self.backsight_periods[g]):
+                A_obj_data.append(-1.0)
+                A_obj_rows.append(current_row)
+                A_obj_cols.append(self._get_var_index('x_bs_p', k, g))
+                index += 1
+        for g in range(self.n_generators):
+            for k in range(self.backsight_periods[g]):
+                A_obj_data.append(-1.0)
+                A_obj_rows.append(current_row)
+                A_obj_cols.append(self._get_var_index('x_bs_n', k, g))
+                index += 1
+
+        A_obj_data.append(coefficients[index])
+        A_obj_rows.append(current_row)
+        A_obj_cols.append(self._get_var_index('delta', 0))
+        index += 1
+
+        A_obj_data.append(coefficients[index])
+        A_obj_rows.append(current_row)
+        A_obj_cols.append(self._get_var_index('theta', 0))
+        index += 1
+
+        current_row += 1
+
+        # 创建稀疏矩阵
+        A_obj = sparse.csr_matrix((A_obj_data, (A_obj_rows, A_obj_cols)),
+                                 shape=(current_row, self._get_var_len()))
+        A_obj = A_obj.toarray()
+        return A_obj
+
 
 
     def get_equality_constraints_matrix(
@@ -808,7 +905,7 @@ class ModelBuilder(ABC):
             min_up_times: list,
             min_down_times: list,
             # cut_lower_bound
-            lower_bound: float
+            # lower_bound: float
     ):
         """不等式约束的矩阵形式：A_ub * v <= b_ub"""
 
@@ -837,7 +934,7 @@ class ModelBuilder(ABC):
             A_ub_rows.append(current_row)
             A_ub_cols.append(self._get_var_index('delta'))
 
-            b_ub.append(self.delta)
+            b_ub.append(0)
             current_row += 1
 
         # 2. generator_constraints 发电机最大发电量约束
@@ -1170,11 +1267,12 @@ class ModelBuilder(ABC):
 
         # 14. 割下界约束: theta >= lower_bound
         # 转换为: -theta <= -lower_bound
-        A_ub_data.append(-1.0)  # -theta
-        A_ub_rows.append(current_row)
-        A_ub_cols.append(self._get_var_index('theta'))
-        b_ub.append(-lower_bound)
-        current_row += 1
+        # 简单约束直接写，也不用放到lagrangian对偶问题里
+        # A_ub_data.append(-1.0)  # -theta
+        # A_ub_rows.append(current_row)
+        # A_ub_cols.append(self._get_var_index('theta'))
+        # b_ub.append(-lower_bound)
+        # current_row += 1
 
         # 打印稀疏矩阵的shape
         # print(len(A_ub_data))  # 237
@@ -1196,7 +1294,7 @@ class ModelBuilder(ABC):
         A_ub_cut_data = []
         A_ub_cut_rows = []
         A_ub_cut_cols = []
-        b_cut_ub = []
+        b_ub_cut = []
 
         current_row = 0
         # state_variables = (
@@ -1253,13 +1351,13 @@ class ModelBuilder(ABC):
                     A_ub_cut_cols.append(self._get_var_index('soc', s))
                     pi_index += 1
 
-                b_cut_ub.append(-intercept)
+                b_ub_cut.append(-intercept)
                 current_row += 1
 
         # 创建稀疏矩阵
         A_ub_cut = sparse.csr_matrix((A_ub_cut_data, (A_ub_cut_rows, A_ub_cut_cols)),
                                  shape=(current_row, self._get_var_len()))
-        return A_ub_cut, b_cut_ub
+        return A_ub_cut, b_ub_cut
 
 
     # 下面没有用到
