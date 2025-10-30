@@ -58,7 +58,6 @@ def get_dual_values(sample_index, log_file, cut_file_name, train_data_path):
 
     try:
         algo.get_dual_values()
-        algo.run_IFR(cut_file_name)
     except KeyboardInterrupt:
         logger.warning("Shutdown request ... exiting")
 
@@ -104,7 +103,7 @@ def main(train_data_path):
     # run_IFR
     path = os.path.join(train_data_path, "cut_csv")
     index_list = []
-    for i in range(0, 10):
+    for i in range(1, 10):
         file = os.path.join(path, f"{i + 1}_cuts.csv")
         if not os.path.exists(file):
             index_list.append(i)
@@ -128,7 +127,7 @@ def main(train_data_path):
 
 if __name__ == "__main__":
     train_data_path = r"D:\Desktop\SCUC\SCUC\ifr_data"
-    dual_values(train_data_path)
-    # main(train_data_path)
+    # dual_values(train_data_path)
+    main(train_data_path)
 
 

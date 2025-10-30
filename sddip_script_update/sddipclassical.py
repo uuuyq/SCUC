@@ -1796,6 +1796,7 @@ class Algorithm:
             # 执行T-1阶段的后向，计算得到关于x_{T-2}阶段的cut
             self.backward_benders_matrix(iteration=i + 1, samples=samples, stage=self.problem_params.n_stages - 1, storage_flag=False)
 
+        self.logger.info(f"IFR start...")
         # 前面的阶段
         self.IFR(dual_values_dict, n_cuts)
 
@@ -1933,7 +1934,7 @@ class Algorithm:
                 #         - sum(pi_ub_value[i] * b_ub[i] for i in range(len(pi_ub_value)))
                 #         - sum(pi_cut_value[i] * b_ub_cut[i] for i in range(len(pi_cut_value))))
                 alpha_list.append(alpha)
-                self.logger.info(f"t: {t} cut_index: {i} alpha: {alpha}")
+                # self.logger.info(f"t: {t} cut_index: {i} alpha: {alpha}")
 
             # 找x，并计算截距，得到的完整的cut添加到问题中  i k t参数是(0, k, t - 1)
             self.logger.info("intercept_calculate...")
@@ -2057,7 +2058,7 @@ class Algorithm:
                     + [val for bs in x_bs_trial_point for val in bs]
                     + soc_trial_point
             )
-            self.logger.info(f"trial_point {trial_point}")
+            # self.logger.info(f"trial_point {trial_point}")
             intercept_list = []
             dm = alpha_list[k]
             for n in range(n_realizations):
