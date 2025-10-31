@@ -69,7 +69,7 @@ def main(train_data_path):
     #     log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
     #     running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
-    pool = Pool(6)
+    pool = Pool(7)
     try:
         for sample_index in index_list:
             log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
@@ -88,4 +88,3 @@ if __name__ == "__main__":
     print(train_data_path)
     main(train_data_path)
 
-    # [1939] 2000内还剩1个样本没有运行完

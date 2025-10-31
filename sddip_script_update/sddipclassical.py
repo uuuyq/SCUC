@@ -1769,6 +1769,7 @@ class Algorithm:
             # Backward pass
             self.logger.info("Backward benders pass")
             self.backward_benders_matrix(i + 1, samples, storage_flag=True)
+
         # 保存到train_data_path中
         with open(os.path.join(self.train_data_path, "dual_values_dict.pkl"), 'wb') as f:
             pkl.dump(self.dual_values_dict, f)
@@ -1781,6 +1782,10 @@ class Algorithm:
 
         with open(os.path.join(self.train_data_path, "dual_values_dict.pkl"), 'rb') as f:
             dual_values_dict = pkl.load(f)
+        for t in reversed(range(1, self.problem_params.n_stages)):
+            for i in range(n_cuts):
+                self.logger.info(f"i: {i} t: {t}")
+                self.logger.info(f"dual_value: {dual_values_dict[(i + 1, 0, t)]}")
 
         # self.n_stages
         # 最后一个阶段，使用SB求解得到num_cuts 个cut
@@ -1908,10 +1913,11 @@ class Algorithm:
                 expr_pi_cut = [dual_values_cut[i] - pi_cut[i] for i in range(len(dual_values_cut))]
                 IFR_model.update()
 
-                # 权重
-                w_X = 1.0
-                w_Y = 1.0
-                w_theta = 1.0
+                # 驻点约束权重
+                w_X = 50.0
+                w_Y = 50.0
+                w_theta = 50.0
+                # 正则项权重
                 w_pi_eq = 1.0
                 w_pi_ub = 1.0
                 w_pi_cut = 1.0
@@ -1925,6 +1931,12 @@ class Algorithm:
                 pi_eq_value = [pi_eq[i].x for i in range(len(pi_eq))]
                 pi_ub_value = [pi_ub[i].x for i in range(len(pi_ub))]
                 pi_cut_value = [pi_cut[i].x for i in range(len(pi_cut))]  # 用于计算截距
+
+                self.logger.info(f"t: {t} i: {i}  stand_pi_cut.shape: {len(dual_values_cut)}")
+                self.logger.info(f"pi_eq_value: {pi_eq_value}")
+                self.logger.info(f"pi_ub_value: {pi_ub_value}")
+                self.logger.info(f"pi_cut_value: {pi_cut_value}")
+
 
                 # 根据计算出的pi值，计算cut
                 alpha = [sum(pi_eq_value[j] * A_eq_Z_X[j, i] for j in range(len(pi_eq_value))) +
@@ -2181,7 +2193,6 @@ class Algorithm:
                         for row in range(A_ub_cut.shape[0]):
                             constr = uc_fw.model.getConstrByName(f"ub_cut_constrains_{row}")
                             dual_values_cut.append(constr.Pi)
-                        # print(f"i n t : {i , n , t}")
                         self.dual_values_dict[(i, n, t)] = [dual_values_eq, dual_values_ub, dual_values_cut]
 
                     dm = []

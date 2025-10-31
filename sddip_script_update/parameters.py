@@ -26,7 +26,7 @@ class Parameters:
         storage_file="storage_data.txt",
         scenario_df=None
     ):
-        TEST_CASES_DIR = r"D:\Desktop\SCUC\SCUC\data\01_test_cases"
+        TEST_CASES_DIR = r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\data\01_test_cases"
 
         raw_data_dir = os.path.join(
             TEST_CASES_DIR, test_case_name, raw_directory

@@ -80,20 +80,12 @@ def data_process_x(df, x_df, num_cuts):
     return df_processed.reset_index(drop=True), x_processed.reset_index(drop=True)
 
 
-if __name__ == "__main__":
-    """
-    收集指定数量的cuts和x
-    """
-    num_cuts = 15  # 指定cuts数量
-    train_data_path = pathlib.Path(r"../data_gen_24_bus118/train_data")  # 原始cut地址
-
-
-
+def proc(num_cuts, train_data_path, force_recalculate_flag=False):
     path = train_data_path / "cut_pkl"
-    pkl_file_name = f"cut_processed_pkl_{num_cuts}_prefix"
-    csv_file_name = f"cut_processed_csv_{num_cuts}_prefix"
+    pkl_file_name = f"cut_processed_pkl"
+    csv_file_name = f"cut_processed_csv"
 
-    for i in range(5000):
+    for i in range(1, 11):
         cut_file = path / f"{i + 1}_cuts.pkl"
         x_file = path / f"{i + 1}_x.pkl"
         with open(cut_file, "br") as f:
@@ -101,7 +93,7 @@ if __name__ == "__main__":
         with open(x_file, "br") as f:
             x_df = pickle.load(f)
         cut_df_processed, x_df_preocessed = data_process_x(cut_df, x_df, num_cuts)
-        if pathlib.Path.exists(train_data_path / pkl_file_name / f"{i+1}_cuts.pkl"):
+        if pathlib.Path.exists(train_data_path / pkl_file_name / f"{i+1}_cuts.pkl") and not force_recalculate_flag:
             print(f"file already exists: {train_data_path / pkl_file_name / f'{i+1}_cuts.pkl'}")
             continue
         else:
@@ -109,5 +101,19 @@ if __name__ == "__main__":
             cut_df_processed.to_csv(train_data_path / csv_file_name / f"{i+1}_cuts.csv", index=False)
             x_df_preocessed.to_pickle(train_data_path / pkl_file_name / f"{i+1}_x.pkl")
             x_df_preocessed.to_csv(train_data_path / csv_file_name / f"{i+1}_x.csv", index=False)
+
+
+if __name__ == "__main__":
+    """
+    收集指定数量的cuts和x
+    """
+    num_cuts = 15  # 指定cuts数量
+    train_data_path = pathlib.Path(r"../data_gen_24_bus6_CV/train_data")  # 原始cut地址
+
+    proc(num_cuts, train_data_path)
+
+
+
+
 
 

@@ -84,7 +84,7 @@ class Infer:
         return algo.sc_sampler.generate_samples(fw_n_samples)
 
     def forward_obj_calculate(self, feat, samples, cuts=None):
-
+        """obj计算"""
         algo = self._get_algo(feat)
         if cuts is not None:
             # 添加cuts
@@ -99,7 +99,7 @@ class Infer:
         return obj_list
 
     def forward_obj_calculate_stage(self, feat, samples, cuts=None):
-
+        """不同阶段的obj"""
         algo = self._get_algo(feat)
         if cuts is not None:
             # 添加cuts

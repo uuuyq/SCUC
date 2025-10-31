@@ -1,3 +1,6 @@
+import pathlib
+import time
+
 from sddip_script_update import sddipclassical
 from multiprocessing import Pool
 import logging
@@ -103,12 +106,12 @@ def main(train_data_path):
     # run_IFR
     path = os.path.join(train_data_path, "cut_csv")
     index_list = []
-    for i in range(1, 10):
-        file = os.path.join(path, f"{i + 1}_cuts.csv")
-        if not os.path.exists(file):
-            index_list.append(i)
-    print(f"index_list: {index_list}")
-    for sample_index in range(0, 10):
+    # for i in range(1, 12):
+    #     file = os.path.join(path, f"{i + 1}_cuts.csv")
+    #     if not os.path.exists(file):
+    #         index_list.append(i)
+    # print(f"index_list: {index_list}")
+    for sample_index in range(12, 13):
         log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
         running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
@@ -126,8 +129,24 @@ def main(train_data_path):
 
 
 if __name__ == "__main__":
-    train_data_path = r"D:\Desktop\SCUC\SCUC\ifr_data"
+    train_data_path = r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\ifr_data"
     # dual_values(train_data_path)
+
+
+
+
+    start = time.time()
     main(train_data_path)
+    print(f"测试样例耗时: {time.time() - start}")  # 10个测试样例耗时: 514.3714916706085
+
+
+
+    # proc
+    num_cuts = 15  # 指定cuts数量
+    train_data_path = pathlib.Path(r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\ifr_data")  # 原始cut地址
+    from sddip_script_update import result_proc
+    result_proc.proc(num_cuts, train_data_path, True)
+
+
 
 

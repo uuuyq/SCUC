@@ -1,4 +1,7 @@
-from sddip_script import sddipclassical
+import pathlib
+import time
+
+from sddip_script_update import sddipclassical
 from multiprocessing import Pool
 import logging
 import multiprocessing
@@ -56,30 +59,41 @@ def running(sample_index, log_file, cut_file_name, train_data_path):
 
 
 def main(train_data_path):
-    path = os.path.join(train_data_path, "cut_csv")
+    path = os.path.join(train_data_path, "cut_csv_sddip")
     index_list = []
-    print(path)
-    for i in range(5000):
+    for i in range(1, 11):
         file = os.path.join(path, f"{i + 1}_cuts.csv")
         if not os.path.exists(file):
             index_list.append(i)
     print(f"index_list: {index_list}")
-    # for sample_index in range(1):
-    #     log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
-    #     running(sample_index, log_file, f"{sample_index + 1}_cuts")
+    for sample_index in index_list:
+        log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
+        running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
-    pool = Pool(7)
-    try:
-        for sample_index in index_list:
-            log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
-            pool.apply_async(running, args=(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path))
-    finally:
-        pool.close()
-        pool.join()
+
+
+    # pool = Pool(7)
+    # try:
+    #     for sample_index in index_list:
+    #         log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
+    #         pool.apply_async(running, args=(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path))
+    # finally:
+    #     pool.close()
+    #     pool.join()
 
 
 if __name__ == "__main__":
-    train_data_path = r"/data_gen_24_bus6_CV\train_data"
+
+    train_data_path = r"./data_gen_24_bus6_CV/train_data"
+    start = time.time()
     main(train_data_path)
+    print(f"测试样例耗时: {time.time() - start}")  # 10个测试样例耗时: 1771.442275762558
+
+    # result_proc
+    num_cuts = 15  # 指定cuts数量
+    train_data_path = pathlib.Path(r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\ifr_data")  # 原始cut地址
+
+
+
 
 
