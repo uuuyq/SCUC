@@ -1756,7 +1756,13 @@ class Algorithm:
         self.logger.info("Backward benders matrix pass")
         self.backward_benders_matrix(1, samples)
 
-    def get_dual_values(self):
+    def get_dual_values(self, file_name):
+        """计算保存标准对偶值"""
+        dual_values_dict_path = os.path.join(self.train_data_path, "dual_values_dict.pkl")
+        if os.path.exists(dual_values_dict_path):
+            self.logger.info("对偶数据已存在，无需重新生成")
+            return
+
         num_cuts = 15
         self.dual_values_dict = {}
         for i in range(num_cuts):
@@ -1771,8 +1777,13 @@ class Algorithm:
             self.backward_benders_matrix(i + 1, samples, storage_flag=True)
 
         # 保存到train_data_path中
-        with open(os.path.join(self.train_data_path, "dual_values_dict.pkl"), 'wb') as f:
+        with open(dual_values_dict_path, 'wb') as f:
             pkl.dump(self.dual_values_dict, f)
+        # 保存cut x
+        self.cuts_storage.save_cut(file_name, self.train_data_path)
+        self.x_storage.save_cut(file_name.split("_")[0] + "_x", self.train_data_path)
+
+
 
 
 
@@ -1782,10 +1793,11 @@ class Algorithm:
 
         with open(os.path.join(self.train_data_path, "dual_values_dict.pkl"), 'rb') as f:
             dual_values_dict = pkl.load(f)
-        for t in reversed(range(1, self.problem_params.n_stages)):
-            for i in range(n_cuts):
-                self.logger.info(f"i: {i} t: {t}")
-                self.logger.info(f"dual_value: {dual_values_dict[(i + 1, 0, t)]}")
+        # 输出查看标准对偶值
+        # for t in reversed(range(1, self.problem_params.n_stages)):
+        #     for i in range(n_cuts):
+        #         self.logger.info(f"i: {i} t: {t}")
+        #         self.logger.info(f"dual_value: {dual_values_dict[(i + 1, 0, t)]}")
 
         # self.n_stages
         # 最后一个阶段，使用SB求解得到num_cuts 个cut
@@ -1793,7 +1805,7 @@ class Algorithm:
             # 采样 每次迭代只采一个样本
             samples = self.sc_sampler.generate_samples(1)
             self.logger.info("Samples: %s", samples)
-            # Forward pass  前向都需要从前往后，只能使用全阶段的forward计算
+            # Forward pass 前向都需要从前往后，只能使用全阶段的forward计算
             self.logger.info(f"Forward pass iter: {i}")
             v_opt_k = self.forward_pass(i, samples)
             # Backward pass
@@ -1814,13 +1826,14 @@ class Algorithm:
 
             # 求解二次问题，得到预测的次梯度
             alpha_list = []
-            for i in range(n_cuts):
+            for n_cut in range(n_cuts):
                 n = 0  # 下面不计算截距，因此不涉及场景的采样， 场景随便取一个就行
                 # 获取标准对偶值
                 dual_values = dual_values_dict[(i + 1, 0, t)]  # k暂时用0，后面也可以考虑尝试将所有的k聚合
                 dual_values_eq = dual_values[0]  # 平等约束
                 dual_values_ub = dual_values[1]  # 不等式约束
                 dual_values_cut = dual_values[2]  # 割约束
+
 
                 # Create forward model
                 uc_fw = ucmodelclassical.ClassicalModel(
@@ -1861,6 +1874,104 @@ class Algorithm:
                 A_obj_Y = A_obj[:, Y_column[0]: Y_column[1]]
                 A_obj_theta = A_obj[:, theta_column[0]: theta_column[1]]
 
+                # 打印上面矩阵的shape
+                # print("dual_values_eq: ", len(dual_values_eq))
+                # print("dual_values_ub: ", len(dual_values_ub))
+                # print("dual_values_cut: ", len(dual_values_cut))
+                # print("A_eq_X shape: ", A_eq_X.shape)
+                # print("A_eq_Y shape: ", A_eq_Y.shape)
+                # print("A_eq_Z_X shape: ", A_eq_Z_X.shape)
+                # print("A_ub_X shape: ", A_ub_X.shape)
+                # print("A_ub_Y shape: ", A_ub_Y.shape)
+                # print("A_ub_Z_X shape: ", A_ub_Z_X.shape)
+                # print("A_ub_cut_X shape: ", A_ub_cut_X.shape)
+                # print("A_ub_cut_theta shape: ", A_ub_cut_theta.shape)
+                # print("A_obj_X shape: ", A_obj_X.shape)
+                # print("A_obj_Y shape: ", A_obj_Y.shape)
+                # print("A_obj_theta shape: ", A_obj_theta.shape)
+
+                # 创建二次问题模型
+                IFR_model = gp.Model("IFR model")
+                IFR_model.setParam("OutputFlag", 0)
+                # 对偶变量 - 使用紧凑的创建方式
+                pi_eq = IFR_model.addVars(
+                    len(dual_values_eq),
+                    vtype=gp.GRB.CONTINUOUS,
+                    name="pi_eq"
+                )
+
+                pi_ub = IFR_model.addVars(
+                    len(dual_values_ub),
+                    vtype=gp.GRB.CONTINUOUS,
+                    lb=0,
+                    name="pi_ub"
+                )
+                pi_cut = IFR_model.addVars(
+                    len(dual_values_cut),
+                    vtype=gp.GRB.CONTINUOUS,
+                    lb=0,
+                    name="pi_cut"
+                )
+
+
+                IFR_model.update()
+
+                # 使用增量方式构建目标函数，避免一次性创建大表达式
+                obj_expr = gp.QuadExpr()
+
+                # 驻点约束权重
+                w_X = 50.0
+                w_Y = 50.0
+                w_theta = 50.0
+                # 正则项权重
+                w_pi_eq = 1.0
+                w_pi_ub = 1.0
+                w_pi_cut = 1.0
+
+                # X向量部分
+                for i in range(A_obj_X.shape[1]):
+                    expr = A_obj_X[0, i]
+                    if A_eq_X.shape[0] > 0:
+                        expr += gp.quicksum(pi_eq[j] * A_eq_X[j, i] for j in range(A_eq_X.shape[0]))
+                    if A_ub_X.shape[0] > 0:
+                        expr += gp.quicksum(pi_ub[j] * A_ub_X[j, i] for j in range(A_ub_X.shape[0]))
+                    if A_ub_cut_X.shape[0] > 0:
+                        expr += gp.quicksum(pi_cut[j] * A_ub_cut_X[j, i] for j in range(n_cut))
+                    obj_expr.add(expr * expr, w_X)
+
+                # Y向量部分
+                for i in range(A_obj_Y.shape[1]):
+                    expr = A_obj_Y[0, i]
+                    if A_eq_Y.shape[0] > 0:
+                        expr += gp.quicksum(pi_eq[j] * A_eq_Y[j, i] for j in range(A_eq_Y.shape[0]))
+                    if A_ub_Y.shape[0] > 0:
+                        expr += gp.quicksum(pi_ub[j] * A_ub_Y[j, i] for j in range(A_ub_Y.shape[0]))
+                    obj_expr.add(expr * expr, w_Y)
+
+                # theta部分
+                if A_ub_cut_theta.shape[0] > 0:
+                    expr_theta = A_obj_theta[0, 0] + gp.quicksum(
+                        pi_cut[j] * A_ub_cut_theta[j, 0] for j in range(A_ub_cut_theta.shape[0]))
+                    obj_expr.add(expr_theta * expr_theta, w_theta)
+
+                # 对偶变量差异部分
+                for j in range(len(dual_values_eq)):
+                    diff = dual_values_eq[j] - pi_eq[j]
+                    obj_expr.add(diff * diff, w_pi_eq)
+
+                for j in range(len(dual_values_ub)):
+                    diff = dual_values_ub[j] - pi_ub[j]
+                    obj_expr.add(diff * diff, w_pi_ub)
+
+                for j in range(len(dual_values_cut)):
+                    diff = dual_values_cut[j] - pi_cut[j]
+                    obj_expr.add(diff * diff, w_pi_cut)
+
+                IFR_model.setObjective(obj_expr, gp.GRB.MINIMIZE)
+
+                IFR_model.update()
+                IFR_model.optimize()
+                """
                 # 创建二次问题模型
                 IFR_model = gp.Model("IFR model")
                 IFR_model.setParam("OutputFlag", 0)
@@ -1925,6 +2036,7 @@ class Algorithm:
                                        + w_theta * (expr_theta * expr_theta) + w_pi_eq * gp.quicksum(x * x for x in expr_pi_eq)
                                        + w_pi_ub * gp.quicksum(x * x for x in expr_pi_ub) + w_pi_cut * gp.quicksum(x * x for x in expr_pi_cut),
                                        gp.GRB.MINIMIZE)
+                """
                 IFR_model.update()
                 IFR_model.optimize()
 

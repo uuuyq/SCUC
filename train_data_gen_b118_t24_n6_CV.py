@@ -60,7 +60,7 @@ def main(train_data_path):
 
     path = os.path.join(train_data_path, "cut_csv")
     index_list = []
-    for i in range(1500, 4000):
+    for i in range(1500, 3000):
         file = os.path.join(path, f"{i + 1}_cuts.csv")
         if not os.path.exists(file):
             index_list.append(i)
@@ -69,16 +69,16 @@ def main(train_data_path):
     #     log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
     #     running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
-    pool = Pool(7)
-    try:
-        for sample_index in index_list:
-            log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
-            pool.apply_async(running, args=(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path))
-    except Exception as e:
-        print(e)
-    finally:
-        pool.close()
-        pool.join()
+    # pool = Pool(7)
+    # try:
+    #     for sample_index in index_list:
+    #         log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
+    #         pool.apply_async(running, args=(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path))
+    # except Exception as e:
+    #     print(e)
+    # finally:
+    #     pool.close()
+    #     pool.join()
 
 
 if __name__ == "__main__":

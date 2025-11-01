@@ -26,10 +26,10 @@ def setup_logger(log_file, process_name, sample_index):
     logger.addHandler(file_handler)
 
     # 输出到控制台
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(formatter)
-    logger.addHandler(console_handler)
+    # console_handler = logging.StreamHandler()
+    # console_handler.setLevel(logging.INFO)
+    # console_handler.setFormatter(formatter)
+    # logger.addHandler(console_handler)
 
 
     return logger
@@ -42,7 +42,7 @@ def get_dual_values(sample_index, log_file, cut_file_name, train_data_path):
     logger = setup_logger(log_file, process_name, sample_index)
 
     # Parameters
-    test_case = "case6ww"
+    test_case = "case118"
     n_stages = 24
     n_realizations = 6
     # Setup
@@ -71,7 +71,7 @@ def running(sample_index, log_file, cut_file_name, train_data_path):
     logger = setup_logger(log_file, process_name, sample_index)
 
     # Parameters
-    test_case = "case6ww"
+    test_case = "case118"
     n_stages = 24
     n_realizations = 6
     # Setup
@@ -97,7 +97,7 @@ def running(sample_index, log_file, cut_file_name, train_data_path):
 
 def dual_values(train_data_path):
     # get_dual_values
-    sample_index = 0
+    sample_index = 3000
     log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
     get_dual_values(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
@@ -106,16 +106,16 @@ def main(train_data_path):
     # run_IFR
     path = os.path.join(train_data_path, "cut_csv")
     index_list = []
-    # for i in range(1, 12):
-    #     file = os.path.join(path, f"{i + 1}_cuts.csv")
-    #     if not os.path.exists(file):
-    #         index_list.append(i)
-    # print(f"index_list: {index_list}")
-    for sample_index in range(12, 13):
+    for i in range(3001, 6000):
+        file = os.path.join(path, f"{i + 1}_cuts.csv")
+        if not os.path.exists(file):
+            index_list.append(i)
+    print(f"index_list: {index_list}")
+    for sample_index in index_list:
         log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
         running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
-    # pool = Pool(6)
+    # pool = Pool(3)
     # try:
     #     for sample_index in index_list:
     #         log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
@@ -129,24 +129,13 @@ def main(train_data_path):
 
 
 if __name__ == "__main__":
-    train_data_path = r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\ifr_data"
-    dual_values(train_data_path)
+    train_data_path = r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\data_gen_24_bus118_ifr\train_data"
 
 
+    # dual_values(train_data_path)
 
-
-    start = time.time()
+    # 数据范围 3001 ~ 6000
     main(train_data_path)
-    print(f"测试样例耗时: {time.time() - start}")  # 10个测试样例耗时: 514.3714916706085
-
-
-
-    # proc
-    # num_cuts = 15  # 指定cuts数量
-    # train_data_path = pathlib.Path(r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\ifr_data")  # 原始cut地址
-    # from sddip_script_update import result_proc
-    # result_proc.proc(num_cuts, train_data_path, True)
-
 
 
 
