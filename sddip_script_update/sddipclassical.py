@@ -1814,6 +1814,9 @@ class Algorithm:
             self.backward_benders_matrix(iteration=i + 1, samples=samples, stage=self.problem_params.n_stages - 1, storage_flag=False)
 
         self.logger.info(f"IFR start...")
+
+
+
         # 前面的阶段
         self.IFR(dual_values_dict, n_cuts)
 
@@ -1826,10 +1829,10 @@ class Algorithm:
 
             # 求解二次问题，得到预测的次梯度
             alpha_list = []
-            for n_cut in range(n_cuts):
+            for n_cut in range(1, n_cuts + 1):
                 n = 0  # 下面不计算截距，因此不涉及场景的采样， 场景随便取一个就行
                 # 获取标准对偶值
-                dual_values = dual_values_dict[(i + 1, 0, t)]  # k暂时用0，后面也可以考虑尝试将所有的k聚合
+                dual_values = dual_values_dict[(n_cut, 0, t)]  # k暂时用0，后面也可以考虑尝试将所有的k聚合
                 dual_values_eq = dual_values[0]  # 平等约束
                 dual_values_ub = dual_values[1]  # 不等式约束
                 dual_values_cut = dual_values[2]  # 割约束
@@ -1852,6 +1855,8 @@ class Algorithm:
                 )
                 # 只有一行
                 A_obj = uc_fw.get_obj_coefficients(self.problem_params.cost_coeffs)
+
+                uc_fw.model.dispose()  # 内存释放
 
                 var_column_dict = uc_fw.get_var_column_index()
                 X_column = var_column_dict['X']
@@ -1889,6 +1894,9 @@ class Algorithm:
                 # print("A_obj_X shape: ", A_obj_X.shape)
                 # print("A_obj_Y shape: ", A_obj_Y.shape)
                 # print("A_obj_theta shape: ", A_obj_theta.shape)
+                self.logger.info(f"t: {t} i: {n_cut}")
+                self.logger.info("二次模型创建开始...")
+
 
                 # 创建二次问题模型
                 IFR_model = gp.Model("IFR model")
@@ -1907,17 +1915,20 @@ class Algorithm:
                     name="pi_ub"
                 )
                 pi_cut = IFR_model.addVars(
-                    len(dual_values_cut),
+                    n_cut,
                     vtype=gp.GRB.CONTINUOUS,
                     lb=0,
                     name="pi_cut"
                 )
 
+                # 为X、Y、theta部分创建绝对值变量
+                abs_vars_X = IFR_model.addVars(A_obj_X.shape[1], vtype=gp.GRB.CONTINUOUS, lb=0, name="abs_X")
+                abs_vars_Y = IFR_model.addVars(A_obj_Y.shape[1], vtype=gp.GRB.CONTINUOUS, lb=0, name="abs_Y")
+                abs_var_theta = IFR_model.addVar(vtype=gp.GRB.CONTINUOUS, lb=0, name="abs_theta")
+
 
                 IFR_model.update()
 
-                # 使用增量方式构建目标函数，避免一次性创建大表达式
-                obj_expr = gp.QuadExpr()
 
                 # 驻点约束权重
                 w_X = 50.0
@@ -1928,7 +1939,35 @@ class Algorithm:
                 w_pi_ub = 1.0
                 w_pi_cut = 1.0
 
-                # X向量部分
+                obj_terms = []
+
+                # # X向量部分
+                # for i in range(A_obj_X.shape[1]):
+                #     expr = A_obj_X[0, i]
+                #     if A_eq_X.shape[0] > 0:
+                #         expr += gp.quicksum(pi_eq[j] * A_eq_X[j, i] for j in range(A_eq_X.shape[0]))
+                #     if A_ub_X.shape[0] > 0:
+                #         expr += gp.quicksum(pi_ub[j] * A_ub_X[j, i] for j in range(A_ub_X.shape[0]))
+                #     if A_ub_cut_X.shape[0] > 0:
+                #         expr += gp.quicksum(pi_cut[j] * A_ub_cut_X[j, i] for j in range(n_cut))
+                #     obj_expr.add(expr * expr, w_X)
+                #
+                # # Y向量部分
+                # for i in range(A_obj_Y.shape[1]):
+                #     expr = A_obj_Y[0, i]
+                #     if A_eq_Y.shape[0] > 0:
+                #         expr += gp.quicksum(pi_eq[j] * A_eq_Y[j, i] for j in range(A_eq_Y.shape[0]))
+                #     if A_ub_Y.shape[0] > 0:
+                #         expr += gp.quicksum(pi_ub[j] * A_ub_Y[j, i] for j in range(A_ub_Y.shape[0]))
+                #     obj_expr.add(expr * expr, w_Y)
+                #
+                # # theta部分
+                # if A_ub_cut_theta.shape[0] > 0:
+                #     expr_theta = A_obj_theta[0, 0] + gp.quicksum(
+                #         pi_cut[j] * A_ub_cut_theta[j, 0] for j in range(n_cut))
+                #     obj_expr.add(expr_theta * expr_theta, w_theta)
+
+                # X向量部分 - 使用绝对值约束
                 for i in range(A_obj_X.shape[1]):
                     expr = A_obj_X[0, i]
                     if A_eq_X.shape[0] > 0:
@@ -1937,40 +1976,62 @@ class Algorithm:
                         expr += gp.quicksum(pi_ub[j] * A_ub_X[j, i] for j in range(A_ub_X.shape[0]))
                     if A_ub_cut_X.shape[0] > 0:
                         expr += gp.quicksum(pi_cut[j] * A_ub_cut_X[j, i] for j in range(n_cut))
-                    obj_expr.add(expr * expr, w_X)
 
-                # Y向量部分
+                    # 添加绝对值约束
+                    IFR_model.addConstr(abs_vars_X[i] >= expr, name=f"abs_X_pos_{i}")
+                    IFR_model.addConstr(abs_vars_X[i] >= -expr, name=f"abs_X_neg_{i}")
+
+                # Y向量部分 - 使用绝对值约束
                 for i in range(A_obj_Y.shape[1]):
                     expr = A_obj_Y[0, i]
                     if A_eq_Y.shape[0] > 0:
                         expr += gp.quicksum(pi_eq[j] * A_eq_Y[j, i] for j in range(A_eq_Y.shape[0]))
                     if A_ub_Y.shape[0] > 0:
                         expr += gp.quicksum(pi_ub[j] * A_ub_Y[j, i] for j in range(A_ub_Y.shape[0]))
-                    obj_expr.add(expr * expr, w_Y)
 
-                # theta部分
+                    # 添加绝对值约束
+                    IFR_model.addConstr(abs_vars_Y[i] >= expr, name=f"abs_Y_pos_{i}")
+                    IFR_model.addConstr(abs_vars_Y[i] >= -expr, name=f"abs_Y_neg_{i}")
+
+                # theta部分 - 使用绝对值约束
                 if A_ub_cut_theta.shape[0] > 0:
                     expr_theta = A_obj_theta[0, 0] + gp.quicksum(
-                        pi_cut[j] * A_ub_cut_theta[j, 0] for j in range(A_ub_cut_theta.shape[0]))
-                    obj_expr.add(expr_theta * expr_theta, w_theta)
+                        pi_cut[j] * A_ub_cut_theta[j, 0] for j in range(n_cut))
 
-                # 对偶变量差异部分
+                    # 添加绝对值约束
+                    IFR_model.addConstr(abs_var_theta >= expr_theta, name="abs_theta_pos")
+                    IFR_model.addConstr(abs_var_theta >= -expr_theta, name="abs_theta_neg")
+
+                # 构建目标函数
+                obj_expr = gp.QuadExpr()
+
+                # X、Y、theta部分使用绝对值变量
+                obj_expr.add(gp.quicksum(w_X * abs_vars_X[i] for i in range(A_obj_X.shape[1])))
+                obj_expr.add(gp.quicksum(w_Y * abs_vars_Y[i] for i in range(A_obj_Y.shape[1])))
+                obj_expr.add(w_theta * abs_var_theta)
+
+                # 正则化项保持平方和
                 for j in range(len(dual_values_eq)):
                     diff = dual_values_eq[j] - pi_eq[j]
-                    obj_expr.add(diff * diff, w_pi_eq)
+                    obj_expr.add(diff * diff * w_pi_eq)
 
                 for j in range(len(dual_values_ub)):
                     diff = dual_values_ub[j] - pi_ub[j]
-                    obj_expr.add(diff * diff, w_pi_ub)
+                    obj_expr.add(diff * diff * w_pi_ub)
 
                 for j in range(len(dual_values_cut)):
                     diff = dual_values_cut[j] - pi_cut[j]
-                    obj_expr.add(diff * diff, w_pi_cut)
+                    obj_expr.add(diff * diff * w_pi_cut)
 
+                # 设置目标函数
                 IFR_model.setObjective(obj_expr, gp.GRB.MINIMIZE)
 
-                IFR_model.update()
-                IFR_model.optimize()
+                # from pympler import muppy, summary
+                #
+                # all_objects = muppy.get_objects()
+                # sum_stats = summary.summarize(all_objects)
+                # summary.print_(sum_stats)
+
                 """
                 # 创建二次问题模型
                 IFR_model = gp.Model("IFR model")
@@ -2044,7 +2105,7 @@ class Algorithm:
                 pi_ub_value = [pi_ub[i].x for i in range(len(pi_ub))]
                 pi_cut_value = [pi_cut[i].x for i in range(len(pi_cut))]  # 用于计算截距
 
-                self.logger.info(f"t: {t} i: {i}  stand_pi_cut.shape: {len(dual_values_cut)}")
+                self.logger.info(f"t: {t} i: {n_cut}  stand_pi_cut.shape: {len(dual_values_cut)}")
                 self.logger.info(f"pi_eq_value: {pi_eq_value}")
                 self.logger.info(f"pi_ub_value: {pi_ub_value}")
                 self.logger.info(f"pi_cut_value: {pi_cut_value}")

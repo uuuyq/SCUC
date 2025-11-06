@@ -67,8 +67,13 @@ def get_dual_values(sample_index, log_file, cut_file_name, train_data_path):
 
 def running(sample_index, log_file, cut_file_name, train_data_path):
 
+
     process_name = multiprocessing.current_process().name
     logger = setup_logger(log_file, process_name, sample_index)
+    # 根据进程名字绑定核心
+    # core_id = set_cpu_affinity_by_name()
+    # print(f"{process_name} 已绑定到核心 {core_id}")
+
 
     # Parameters
     test_case = "case118"
@@ -111,20 +116,51 @@ def main(train_data_path):
         if not os.path.exists(file):
             index_list.append(i)
     print(f"index_list: {index_list}")
-    for sample_index in index_list:
-        log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
-        running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
+    # for sample_index in index_list:
+    #     log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
+    #     running(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path)
 
-    # pool = Pool(3)
-    # try:
-    #     for sample_index in index_list:
-    #         log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
-    #         pool.apply_async(running, args=(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path))
-    # except Exception as e:
-    #     print(e)
-    # finally:
-    #     pool.close()
-    #     pool.join()
+    pool = Pool(12)
+    try:
+        for sample_index in index_list:
+            log_file = os.path.join(train_data_path, "log", f"{sample_index + 1}_logs.txt")
+            pool.apply_async(running, args=(sample_index, log_file, f"{sample_index + 1}_cuts", train_data_path))
+    except Exception as e:
+        print(e)
+    finally:
+        pool.close()
+        pool.join()
+
+
+import psutil
+import re
+def set_cpu_affinity_by_name():
+    """根据进程名绑定到固定核心"""
+    process = multiprocessing.current_process()
+    process_name = process.name  # e.g. "Process-3"
+    pid = os.getpid()
+    p = psutil.Process(pid)
+
+    # 获取总核心数
+    num_cores = psutil.cpu_count(logical=False)
+
+    # 提取进程号部分（如 "Process-3" → 3）
+    match = re.search(r'\d+', process_name)
+    if match:
+        process_id_num = int(match.group())
+    else:
+        process_id_num = 0
+
+    # 按核心数取模分配
+    core_id = (process_id_num - 1) % num_cores
+
+    try:
+        p.cpu_affinity([core_id])
+        print(f"[PID {pid}] {process_name} 绑定到核心 {core_id}")
+    except Exception as e:
+        print(f"设置CPU亲和性失败: {e}")
+
+    return core_id
 
 
 

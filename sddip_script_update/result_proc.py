@@ -1,3 +1,5 @@
+import os.path
+
 import numpy as np
 import pandas as pd
 import pathlib
@@ -81,26 +83,64 @@ def data_process_x(df, x_df, num_cuts):
 
 
 def proc(num_cuts, train_data_path, force_recalculate_flag=False):
-    path = train_data_path / "cut_pkl"
-    pkl_file_name = f"cut_processed_pkl"
-    csv_file_name = f"cut_processed_csv"
 
-    for i in range(1, 11):
+    path = train_data_path / "cut_pkl"
+    pkl_file_name = f"cut_processed_pkl_15_prefix"
+    csv_file_name = f"cut_processed_csv_15_prefix"
+
+    for i in range(2800, 4060):
         cut_file = path / f"{i + 1}_cuts.pkl"
         x_file = path / f"{i + 1}_x.pkl"
-        with open(cut_file, "br") as f:
-            cut_df = pickle.load(f)
-        with open(x_file, "br") as f:
-            x_df = pickle.load(f)
-        cut_df_processed, x_df_preocessed = data_process_x(cut_df, x_df, num_cuts)
+
+        if not pathlib.Path.exists(cut_file) or not pathlib.Path.exists(x_file):
+            print(f"文件不存在: {cut_file} or {x_file}")
+            continue
+
+        # 检查文件是否存在及权限
+        # print("存在:", os.path.exists(cut_file))
+        # print("可读:", os.access(cut_file, os.R_OK))
+        # print("可写:", os.access(cut_file, os.W_OK))
+        # print("文件大小:", os.path.getsize(cut_file) if os.path.exists(cut_file) else "不存在")
+
+        # with open(cut_file, "br") as f:
+        #     cut_df = pickle.load(f)
+        # with open(x_file, "br") as f:
+        #     x_df = pickle.load(f)
+        try:
+            with open(cut_file, "rb") as f:
+                cut_df = pickle.load(f)
+        except PermissionError:
+            print(f"[警告] 文件被占用或无权限: {cut_file}")
+            continue
+        except Exception as e:
+            print(f"[错误] 无法读取 {cut_file}: {e}")
+            continue
+        try:
+            with open(x_file, "br") as f:
+                x_df = pickle.load(f)
+        except PermissionError:
+            print(f"[警告] 文件被占用或无权限: {x_file}")
+            continue
+        except Exception as e:
+            print(f"[错误] 无法读取 {x_file}: {e}")
+            continue
+
+
+
         if pathlib.Path.exists(train_data_path / pkl_file_name / f"{i+1}_cuts.pkl") and not force_recalculate_flag:
-            print(f"file already exists: {train_data_path / pkl_file_name / f'{i+1}_cuts.pkl'}")
+            print(f"文件已处理: {train_data_path / pkl_file_name / f'{i+1}_cuts.pkl'}")
             continue
         else:
+            cut_df_processed, x_df_preocessed = data_process_x(cut_df, x_df, num_cuts)
+
             cut_df_processed.to_pickle(train_data_path / pkl_file_name / f"{i+1}_cuts.pkl")
             cut_df_processed.to_csv(train_data_path / csv_file_name / f"{i+1}_cuts.csv", index=False)
             x_df_preocessed.to_pickle(train_data_path / pkl_file_name / f"{i+1}_x.pkl")
             x_df_preocessed.to_csv(train_data_path / csv_file_name / f"{i+1}_x.csv", index=False)
+
+            # finally:
+            #     print(f"file error: {train_data_path / pkl_file_name / f'{i + 1}_cuts.pkl'}")
+
 
 
 if __name__ == "__main__":
@@ -108,7 +148,7 @@ if __name__ == "__main__":
     收集指定数量的cuts和x
     """
     num_cuts = 15  # 指定cuts数量
-    train_data_path = pathlib.Path(r"../data_gen_24_bus6_CV/train_data")  # 原始cut地址
+    train_data_path = pathlib.Path(r"../data_gen_24_bus118/train_data")  # 原始cut地址
 
     proc(num_cuts, train_data_path)
 

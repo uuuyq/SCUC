@@ -41,6 +41,12 @@ def collect_data_update(train_data_path, tensor_path, num_data, num_cuts, additi
         cur_x_path = os.path.join(cuts_processed_path, f"{n + 1}_x.pkl")
         cur_parameter_path = os.path.join(scenarios_path, f"{n + 1}_parameter.csv")
         cur_scenario_path = os.path.join(scenarios_path, f"{n + 1}_scenario.csv")
+        print(f"cur: {n}")
+        # 当数据不存在时 continue
+        if not os.path.exists(cur_cuts_path):
+            print(f"文件不存在：{cur_cuts_path}")
+            continue
+
         # pickle 保存能保证array类型不改变
         with open(cur_cuts_path, "rb") as file:
             cuts_df = pickle.load(file)
@@ -101,6 +107,12 @@ def collect_data_update(train_data_path, tensor_path, num_data, num_cuts, additi
     print("label_tensor.shape: {}".format(label_tensor.shape))
     print("x_tensor.shape: {}".format(x_tensor.shape))
 
+    # 118bus  4060 num_data
+    # feat_tensor.shape: torch.Size([4053, 23, 238])
+    # scenario_tensor.shape: torch.Size([4053, 23, 6, 236])
+    # label_tensor.shape: torch.Size([4053, 23, 15, 379])
+    # x_tensor.shape: torch.Size([4053, 23, 15, 378])
+
 
 
     with open(feat_tensor_path, "wb") as f:
@@ -115,5 +127,5 @@ def collect_data_update(train_data_path, tensor_path, num_data, num_cuts, additi
 if __name__ == '__main__':
     train_data_path = r"../data_gen_24_bus118\train_data"
     tensor_path = r"tensor_118"
-    num_data = 650
+    num_data = 4060
     collect_data_update(train_data_path, tensor_path, num_data, 15, additional_data="prefix")

@@ -137,12 +137,13 @@ def model_gamma_choice(trainer):
 
 
 def compare(trainer):
-    num_instances = 20
+    num_instances = 7
 
     # 选择test_dataset中的部分数据用于比较
     sampled = trainer.sample_test_dataset(num_instances=num_instances, save_flag=True)
 
     # 计算sddip时间和obj
+    print("sampled_read")
     sampled_sddip = trainer.sampled_read(data_sampled=sampled)
 
 
@@ -150,6 +151,7 @@ def compare(trainer):
     # sampled_sddip = torch.load(os.path.join(trainer.config.result_path,"compare", "num-50_sampled_sddip_07-31-04-21.pkl"))
 
     # 计算x和pred_cut, 重算截距
+    print("pred_and_re")
     sampled_pred_re = trainer.pred_and_re(sampled_sddip, save_flag=True)
 
     # pred sddip
@@ -157,6 +159,7 @@ def compare(trainer):
 
     # # compare
     # sampled_sddip_pred_and_re_maxl = torch.load(os.path.join(trainer.config.result_path, "compare", "num-5_sampled_sddip_pred_and_re_09-16-17-51.pkl"))
+    print("compare")
     trainer.compare(fw_n_samples=50, max_lag=None, data_sampled=sampled_pred_re)
 
     # model_gamma_choice(trainer)
@@ -168,7 +171,7 @@ def main(trainer):
     trainer.load_dataset()
 
 
-    trainer.train()
+    # trainer.train()
 
     compare(trainer)
 
@@ -177,10 +180,10 @@ def main(trainer):
 if __name__ == '__main__':
     train_data_path = r"..\data_gen_24_bus118\train_data"
     tensor_data_path = r".\tensor_118"
-    result_path = r".\result_118"
+    result_path = r".\result_118_11"
     gamma = 0.5
     config = Config(
-        num_data=650,
+        num_data=4060,
         num_stage=24,
         n_vars=378,
         feat_dim=238,  # instance_index, stage, feat(118 * 2)
@@ -189,7 +192,7 @@ if __name__ == '__main__':
         train_data_path=train_data_path,
         tensor_data_path=tensor_data_path,
         result_path=result_path,
-        N_EPOCHS=300,
+        N_EPOCHS=100,
         batch_size=16,
         weight_decay=0.001,
         LEARNING_RATE=1e-4,
