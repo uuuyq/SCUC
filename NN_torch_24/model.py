@@ -23,7 +23,7 @@ class NN_Model(nn.Module):
         mlp_layers.append(nn.Linear(hidden_arr[-1], (num_vars + 1) * num_pieces))
         self.mlp = nn.Sequential(*mlp_layers)
 
-    def forward(self, feat, x, scenarios=None, return_output=False, x_input_flag=False):
+    def forward(self, feat, x, scenarios=None, x_input_flag=False):
         """
         feats = torch.reshape(feats, [-1, 4])  [batch, 4]
         scenarios = torch.reshape(scenarios, [-1, self.num_scenarios, 12])  [batch, 6, 12]
@@ -53,12 +53,14 @@ class NN_Model(nn.Module):
         # 还要预测出顺序
         # x.shape  [batch, self.num_pieces, self.num_vars]
         # result_storage_temp.shape  []
-        result = (x * output[:, :, :x.size(-1)]).sum(dim=-1, keepdims=True) + output[:, :, -1:]
+        # result = (x * output[:, :, :x.size(-1)]).sum(dim=-1, keepdims=True) + output[:, :, -1:]
+        #
+        # if return_output:
+        #     return result, output
+        # else:
+        #     return result
 
-        if return_output:
-            return result, output
-        else:
-            return result
+        return output
 
 class ApproxEMDLoss(nn.Module):
     def __init__(self, temperature_scales=None):

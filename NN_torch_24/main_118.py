@@ -171,9 +171,9 @@ def main(trainer):
     trainer.load_dataset()
 
 
-    # trainer.train()
+    trainer.train()
 
-    compare(trainer)
+    # compare(trainer)
 
 
 
@@ -181,7 +181,7 @@ if __name__ == '__main__':
     train_data_path = r"..\data_gen_24_bus118\train_data"
     tensor_data_path = r".\tensor_118"
     result_path = r".\result_118_11"
-    gamma = 0.5
+    gamma = 0.05
     config = Config(
         num_data=4060,
         num_stage=24,
@@ -196,7 +196,7 @@ if __name__ == '__main__':
         batch_size=16,
         weight_decay=0.001,
         LEARNING_RATE=1e-4,
-        hidden_arr=(512, 512),
+        hidden_arr=(1024, 1024),
         gamma=gamma,
         n_realizations=6,
         scenario_flag=False,

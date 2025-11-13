@@ -25,7 +25,7 @@ class Trainer:
                  ):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.params_name = f"model_{self.config.num_data}_{self.config.n_pieces}_lr-{self.config.LEARNING_RATE}_wd-{self.config.weight_decay}_gamma-{self.config.gamma}"
+        self.params_name = f"model_{self.config.num_data}_{self.config.n_pieces}_lr-{self.config.LEARNING_RATE}_wd-{self.config.weight_decay}_gamma-{self.config.gamma}_dim-{self.config.hidden_arr}_standard-{self.config.standard_flag}"
 
 
     def load_dataset(self):

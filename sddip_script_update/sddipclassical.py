@@ -1447,7 +1447,7 @@ class Algorithm:
         inner_model.add_z_var_constrains(self.problem_params.soc_max, self.problem_params.pg_min, self.problem_params.pg_max)
         return inner_model
 
-    def intercept_recalculate(self, cuts_predicted):
+    def intercept_recalculate(self, cuts_predicted, logger=None):
 
         # TODO: 截距重算应该还能改进，比如采样1阶段得到x，重算1阶段的cut截距，然后可以将cut添加到问题中，
         #  帮助前向过程中计算第2阶段x：前向计算从前往后计算，先计算出x_1，在去找x_2，如果x_1更优，应该有助于找到更好的x_2，从而得到更好的cut
@@ -1457,13 +1457,16 @@ class Algorithm:
 
         # 场景采样 3个不同的路径
         self.n_samples = self.n_samples_primary
-        n_samples = self.n_samples
+        n_samples = 1
         samples = self.sc_sampler.generate_samples(n_samples)
+
+        if logger is not None:
+            logger.info(f"samples: {samples}")
+            self.logger = logger
 
         # forward
         result = result_Dict("result_storage_temp")
 
-        n_samples = len(samples)
         v_opt_k = []
         for k in range(n_samples):
             # t = -1对应的状态值
@@ -1553,8 +1556,10 @@ class Algorithm:
                 stage_result.append(theta_value)
                 result.add(0, k, t, stage_result)
 
+        self.logger.info(f"forward complete")
+        self.logger.info(f"forward result: {result}")
+        self.logger.info("re start...")
         # SB
-        n_samples = len(samples)
         cuts_predicted_recalculate = {}
         # print("n_stage", self.problem_params.n_stages)
         for t in reversed(range(1, self.problem_params.n_stages)):
@@ -1623,6 +1628,7 @@ class Algorithm:
                 intercept = mean(intercept_list)
                 # print("t, piece", t - 1, piece)
                 cuts_predicted_recalculate[(t - 1, piece)] = cuts_predicted[t - 1][piece].tolist() + [intercept]
+                self.logger.info(f"t, piece, cuts: {t - 1}, {piece}, {cuts_predicted_recalculate[(t - 1, piece)]}")
         return cuts_predicted_recalculate
 
     def get_x_with_nocut(self, num_x):

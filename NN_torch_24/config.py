@@ -20,6 +20,7 @@ class Config:
                  scenario_flag=False,
                  x_input_flag=True,
                  additional_data=None,
+                 standard_flag=False
                  ):
         """
         :param num_data: 数据集样本数
@@ -61,3 +62,4 @@ class Config:
         self.tensor_data_path = tensor_data_path
         self.result_path = result_path
         self.additional_data = additional_data
+        self.standard_flag = standard_flag

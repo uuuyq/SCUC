@@ -171,14 +171,14 @@ class Infer:
         return lag_time_list, lag_obj_list, lag_cuts_list
 
 
-    def intercept_recalculate(self, feat, cuts_predicted):
+    def intercept_recalculate(self, feat, cuts_predicted, logger=None):
         n_pieces = cuts_predicted.shape[1]
         # cuts_predicted中包含截距，需要截掉
-        if cuts_predicted.size(-1) > self.N_VARS:
+        if cuts_predicted.shape[-1] > self.N_VARS:
             cuts_predicted = cuts_predicted[..., :self.N_VARS]
         algo = self._get_algo(feat)
         start = time.time()
-        cuts_predicted = algo.intercept_recalculate(cuts_predicted)
+        cuts_predicted = algo.intercept_recalculate(cuts_predicted, logger)
         cuts_predicted_re = [
             [cuts_predicted[(t, k)] for k in range(n_pieces)]
             for t in range(self.n_stages - 1)

@@ -1,21 +1,21 @@
 import copy
-import pickle
+import logging
 
-import pandas
 import torch
 from torch.utils.data import DataLoader, random_split
 from config import Config
-from dataset import CutDataset
+from dataset import CutDataset, CutDatasetNormalized
 from model import NN_Model
 import matplotlib.pyplot as plt
 import os
 from infer import Infer
 from torch.utils.data import Subset
 from datetime import datetime
+import multiprocessing as mp
+from functools import partial
 from tqdm import tqdm
-import multiprocessing
 
-class Trainer:
+class TrainerUpdate:
     """
     输入： x + 分布参数 / scenarios
     输出：cuts
@@ -25,7 +25,7 @@ class Trainer:
                  ):
         self.config = config
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.params_name = f"model_{self.config.num_data}_{self.config.n_pieces}_lr-{self.config.LEARNING_RATE}_wd-{self.config.weight_decay}_gamma-{self.config.gamma}"
+        self.params_name = f"model_{self.config.num_data}_{self.config.n_pieces}_lr-{self.config.LEARNING_RATE}_wd-{self.config.weight_decay}_gamma-{self.config.gamma}_dim-{self.config.hidden_arr}_standard-{self.config.standard_flag}"
 
 
     def load_dataset(self):
@@ -42,24 +42,46 @@ class Trainer:
         val_size = int(0.15 * len(data_set))
         test_size = len(data_set) - train_size - val_size
 
-        # TODO: 标准化
-        # if self.standardize_flag:
-        #     # 整个数据集标准化
-        #     labels = torch.cat([label for _, label in data_set], dim=0)
-        #     self.scaler_part1 = StandardScaler()  # 前13列
-        #     self.scaler_part2 = StandardScaler()  # 最后一列
-        #     # 按最后一个维度划分，分别求均值和方差
-        #     self.scaler_part1.fit(labels[..., :13])
-        #     self.scaler_part2.fit(labels[..., -1:])
-        #     # 处理后的数据集
-        #     data_set = ProcessedDataset(data_set, self.scaler_part1, self.scaler_part2)
-
         # 使用 random_split 方法进行划分
         generator1 = torch.Generator().manual_seed(42)
-        train_dataset, val_dataset, test_dataset = random_split(data_set, [train_size, val_size, test_size], generator=generator1)
-        self.train_dataset = train_dataset
-        self.val_dataset = val_dataset
-        self.test_dataset = test_dataset
+        self.train_dataset, self.val_dataset, self.test_dataset = random_split(data_set, [train_size, val_size, test_size], generator=generator1)
+
+        if self.config.standard_flag:
+            #  label_tensor.shape: torch.Size([4053, 23, 15, 379])
+            train_indices = self.train_dataset.indices  # Subset 的索引
+            train_cut = data_set.cut_tensor[train_indices]  # [num_train, 23, 15, 379]
+
+            # 计算均值和标准差，只按最后一维计算
+            # shape = [1,1,1,379] 用于广播
+            self.cut_mean = train_cut.mean(dim=(0, 1, 2))
+            self.cut_std = train_cut.std(dim=(0, 1, 2)) + 1e-8  # 防止除零
+
+            # 标准化训练集
+            train_cut_norm = (train_cut - self.cut_mean) / self.cut_std
+            # 标准化验证集
+            val_cut = data_set.cut_tensor[self.val_dataset.indices]
+            val_cut_norm = (val_cut - self.cut_mean) / self.cut_std
+
+            # 封装为 Dataset 对象
+            self.train_dataset = CutDatasetNormalized(
+                data_set.feat_tensor[self.train_dataset.indices],
+                data_set.scenario_tensor[self.train_dataset.indices],
+                data_set.x_tensor[self.train_dataset.indices],
+                train_cut_norm
+            )
+
+            self.val_dataset = CutDatasetNormalized(
+                data_set.feat_tensor[self.val_dataset.indices],
+                data_set.scenario_tensor[self.val_dataset.indices],
+                data_set.x_tensor[self.val_dataset.indices],
+                val_cut_norm
+            )
+        print(f"load_dataset done, standard_flag: {self.config.standard_flag}")
+        if self.config.standard_flag:
+            print("cut_mean: ", self.cut_mean)
+            print("cut_std: ", self.cut_std)
+
+
         # print(len(data_set))
         # print(len(self.train_dataset))
         # print(len(self.val_dataset))
@@ -70,9 +92,17 @@ class Trainer:
 
 
     def train(self):
-        model = NN_Model(self.config.num_stage, self.config.hidden_arr, self.config.n_vars, self.config.n_pieces).to(self.device)
 
 
+        model_path = os.path.join(self.config.result_path, "model", f"{self.params_name}.pth")
+
+        if os.path.exists(model_path):
+            print(f"model 存在，load model: {model_path}")
+            self._load_model()
+            return
+
+        model = NN_Model(self.config.num_stage, self.config.hidden_arr, self.config.n_vars, self.config.n_pieces)
+        model = model.to(self.device)
         train_data_loader = DataLoader(self.train_dataset, batch_size=self.config.batch_size, shuffle=False, num_workers=0, drop_last=False)
         val_data_loader = DataLoader(self.val_dataset, batch_size=self.config.batch_size, shuffle=False, num_workers=0, drop_last=False)
         # 损失函数
@@ -109,15 +139,20 @@ class Trainer:
                 cuts = cuts.to(self.device)
                 scenarios = scenarios.to(self.device)
                 x = x.to(self.device)
+                self.cut_std = self.cut_std.to(self.device)
+                self.cut_mean = self.cut_mean.to(self.device)
+
+                pred_cuts = model(feats, x, x_input_flag=self.config.x_input_flag)
+                loss_cuts = criterion(pred_cuts, cuts)
+
+                if self.config.standard_flag:
+                    cuts = cuts * self.cut_std + self.cut_mean
+                    pred_cuts = pred_cuts * self.cut_std + self.cut_mean
 
                 labels = (x * cuts[:, :, :x.size(-1)]).sum(dim=-1, keepdim=True) + cuts[:, :, -1:]
-                if self.config.scenario_flag:
-                    Q, pred_cuts = model(feats, x, scenarios, return_output=True, x_input_flag=self.config.x_input_flag)
-                else:
-                    Q, pred_cuts = model(feats, x, return_output=True, x_input_flag=self.config.x_input_flag)
-
+                Q = (x * pred_cuts[:, :, :x.size(-1)]).sum(dim=-1, keepdims=True) + pred_cuts[:, :, -1:]
                 loss_Q = criterion(Q, labels)
-                loss_cuts = criterion(pred_cuts, cuts)
+
                 loss = loss_Q + self.config.gamma * loss_cuts
 
                 train_loss_Q += loss_Q.item() * feats.size(0)
@@ -152,15 +187,16 @@ class Trainer:
                     scenarios = scenarios.to(self.device)
                     x = x.to(self.device)
 
-                    labels = (x * cuts[:, :, :x.size(-1)]).sum(dim=-1, keepdim=True) + cuts[:, :, -1:]
-
-                    if self.config.scenario_flag:
-                        Q, pred_cuts = model(feats, x, scenarios, return_output=True, x_input_flag=self.config.x_input_flag)
-                    else:
-                        Q, pred_cuts = model(feats, x, return_output=True, x_input_flag=self.config.x_input_flag)
-
-                    loss_Q = criterion(Q, labels)
+                    pred_cuts = model(feats, x, x_input_flag=self.config.x_input_flag)
                     loss_cuts = criterion(pred_cuts, cuts)
+
+                    if self.config.standard_flag:
+                        cuts = cuts * self.cut_std + self.cut_mean
+                        pred_cuts = pred_cuts * self.cut_std + self.cut_mean
+                    labels = (x * cuts[:, :, :x.size(-1)]).sum(dim=-1, keepdim=True) + cuts[:, :, -1:]
+                    Q = (x * pred_cuts[:, :, :x.size(-1)]).sum(dim=-1, keepdims=True) + pred_cuts[:, :, -1:]
+                    loss_Q = criterion(Q, labels)
+
                     loss = loss_Q + self.config.gamma * loss_cuts
 
                     val_loss += loss.item() * feats.size(0)
@@ -213,7 +249,9 @@ class Trainer:
 
     def _load_model(self):
         model = NN_Model(self.config.num_stage, self.config.hidden_arr, self.config.n_vars, self.config.n_pieces)
-        model.load_state_dict(torch.load(os.path.join(self.config.result_path, "model", f"{self.params_name}.pth")))
+        model_path = os.path.join(self.config.result_path, "model", f"{self.params_name}.pth")
+        print(f"Load model from: {model_path}")
+        model.load_state_dict(torch.load(model_path))
         model = model.to(self.device)
         return model
 
@@ -233,7 +271,13 @@ class Trainer:
             # 数据转移到设备
             feats = feats.to(self.device)
             x = x.to(self.device)
-            Q, pred_cuts = model(feats, x, return_output=True, x_input_flag=self.config.x_input_flag)
+            self.cut_std = self.cut_std.to(self.device)
+            self.cut_mean = self.cut_mean.to(self.device)
+
+            pred_cuts = model(feats, x, x_input_flag=self.config.x_input_flag)
+
+            if self.config.standard_flag:
+                pred_cuts = pred_cuts * self.cut_std + self.cut_mean
 
         return pred_cuts
 
@@ -270,7 +314,7 @@ class Trainer:
 
         # 随机选取dataset中的部分数据
         import random
-        random.seed(42)
+        random.seed(43)
 
         test_dataset = self.test_dataset
         total = len(test_dataset)
@@ -285,7 +329,6 @@ class Trainer:
 
 
         num_samples = min(num_instances, len(eligible_indices))
-        print("num_samples", num_samples)
 
         # 抽取
         sampled_indices = random.sample(eligible_indices, num_samples)
@@ -417,7 +460,45 @@ class Trainer:
 
         return data_sampled
 
-    def _get_pred_cuts(self, data_sampled):
+
+
+
+    # def _get_pred_cuts(self, feat):
+    #     """
+    #     预测一个instance
+    #     获取pred_cuts，记录推理耗时
+    #     :return:
+    #     """
+    #     import time
+    #
+    #     model = self._load_model()
+    #     # 记录开始时间
+    #     start = time.time()
+    #     # print("feat.shape", feat.shape)
+    #     x_tensor = self._calculate_x(feat)
+    #     # print("x_tensor", x_tensor.shape)
+    #     cuts_pred = self._predict_single(model, (feat, x_tensor))
+    #     # print("pred_cuts", pred_cuts.shape)
+    #     pred_time = time.time() - start
+    #
+    #     return cuts_pred, x_tensor, pred_time
+
+
+
+
+    def integrate_result(self, result):
+        """整合为原来的形式，外部是dict，元素为list"""
+        combined_dict = {}
+
+        for d in result:
+            for key, value in d.items():
+                if key not in combined_dict:
+                    combined_dict[key] = []
+                combined_dict[key].append(value)
+
+        return combined_dict
+
+    def _get_pred_cuts(self, data_sampled, file_name=None):
         '''
         获取pred_cuts，记录推理耗时
         :return:
@@ -430,7 +511,7 @@ class Trainer:
         data_sampled = copy.deepcopy(data_sampled)
         num_instances = len(data_sampled["feat"])
 
-        data_sampled["inference_calculate_X_time"] = []
+        data_sampled["time_pred"] = []
         data_sampled["cuts_pred"] = []
         data_sampled["x_calculated"] = []
 
@@ -447,494 +528,201 @@ class Trainer:
             # print("pred_cuts", pred_cuts.shape)
             end = time.time()
 
-            data_sampled["inference_calculate_X_time"].append(end - start)
+            data_sampled["time_pred"].append(end - start)
             data_sampled["cuts_pred"].append(pred_cuts)
             data_sampled["x_calculated"].append(x_tensor)
+        torch.save(data_sampled, os.path.join(self.config.result_path, "compare", f"{file_name}",
+                                        f"num-{num_instances}_data_sampled_pred.pkl"))
         return data_sampled
 
-    def _recalculate_cuts(self, data_sampled):
+    def compare_multiprocess(self, num_instances, fw_n_samples, file_name):
         """
-        重新计算intercept
-        :param data_sampled:
-        :return:
+        使用多进程方式比较时间和obj。
+        注意：如果CPU紧张，pred或re的耗时可能会略有上升。
         """
-        feat_sampled = data_sampled["feat"]
-        cuts_pred = data_sampled["cuts_pred"]
-        num_instances = len(feat_sampled)
+        if not os.path.exists(os.path.join(self.config.result_path, "compare", f"{file_name}",
+                                        f"num-{num_instances}_data_sampled_pred.pkl")):
+            # 创建文件夹
+            if not os.path.exists(os.path.join(self.config.result_path, "compare", f"{file_name}")):
+                os.makedirs(os.path.join(self.config.result_path, "compare", f"{file_name}"))
 
-        data_sampled["cuts_pred_re"] = []
-        data_sampled["recalculate_time"] = []
+            data_sampled = self.sample_test_dataset(num_instances, save_flag=True)
 
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
-        # no cut sddip
-        for index in tqdm(range(num_instances), desc="recalculate"):
-            print(f"recalculate step: {index} / {num_instances}")
-            recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat_sampled[index], cuts_pred[index])
-            data_sampled["cuts_pred_re"].append(cuts_predicted_re)
-            data_sampled["recalculate_time"].append(recalculate_time)
-        return data_sampled
+            data_sampled = self.sampled_read(data_sampled)
 
+            data_sampled = self._get_pred_cuts(data_sampled, file_name)
+        else:
+            data_sampled = torch.load(os.path.join(self.config.result_path, "compare", f"{file_name}",
+                                        f"num-{num_instances}_data_sampled_pred.pkl"))
 
-    def pred_and_re(self, data_sampled, save_flag):
-        data_sampled = self._get_pred_cuts(data_sampled)
-        data_sampled = self._recalculate_cuts(data_sampled)
-        if save_flag:
-            t = datetime.now().strftime("%m-%d-%H-%M")
-            save_path = os.path.join(self.config.result_path, "compare", f"num-{len(data_sampled['feat'])}_sampled_sddip_pred_and_re_{t}.pkl")
-            torch.save(data_sampled, save_path)
-        return data_sampled
-
-
-
-    def pred_sddip(self, data_sampled, max_lag=3):
-        """
-        使用预测的cuts进行n次sddip，记录增加后的所有cuts，也顺便把obj也记录了
-            inference + 1 lag
-            inference + 2 lag
-            ...
-            inference + n lag
-        :param data_sampled: feat cuts_pred cuts_pred_re (data_sampled, get_pred_cuts, recalculate_cuts)
-        :return:
-        """
-
-
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
-
-        feat_sampled = data_sampled["feat"]
-        cuts_pred = data_sampled["cuts_pred"]
-        cuts_pred_re = data_sampled["cuts_pred_re"]
-        for i in range(max_lag):
-            data_sampled[f"cuts_pred_{i + 1}_lag"] = []
-            data_sampled[f"obj_pred_{i + 1}_lag_only_one"] = []
-            data_sampled[f"time_pred_{i + 1}_lag"] = []  # 只是lag的时间，还要加上pred
-            data_sampled[f"cuts_pred_re_{i + 1}_lag"] = []
-            data_sampled[f"obj_pred_re_{i + 1}_lag_only_one"] = []  # 以及re的时间
-            data_sampled[f"time_pred_re_{i + 1}_lag"] = []
-        for index in tqdm(range(len(feat_sampled)), desc=f"pred sddip"):
-            print(f"pred sddip step: {index} / {len(feat_sampled)}")
-            lag_time_list, lag_obj_list, lag_cuts_list = inference_sddip.sddip_n_lag(feat_sampled[index], cuts_pred[index], max_lag)
-            lag_time_list_re, lag_obj_list_re, lag_cuts_list_re = inference_sddip.sddip_n_lag(feat_sampled[index], cuts_pred_re[index], max_lag)
-
-            for i in range(max_lag):
-                data_sampled[f"cuts_pred_{i + 1}_lag"].append(lag_cuts_list[i])
-                data_sampled[f"obj_pred_{i + 1}_lag_only_one"].append(lag_obj_list[i])
-                data_sampled[f"time_pred_{i + 1}_lag"].append(lag_time_list[i])
-                data_sampled[f"cuts_pred_re_{i + 1}_lag"].append(lag_cuts_list_re[i])
-                data_sampled[f"obj_pred_re_{i + 1}_lag_only_one"].append(lag_obj_list_re[i])
-                data_sampled[f"time_pred_re_{i + 1}_lag"].append(lag_time_list_re[i])
-                # 简单看一下是不是增加了cut
-                # print(f"{i + 1}_lag cuts shape: {lag_cuts_list[i].shape}")
-                # print(f"{i + 1}_lag_re cuts shape: {lag_cuts_list_re[i].shape}")
-        t = datetime.now().strftime("%m-%d-%H-%M")
-        save_path = os.path.join(self.config.result_path, "compare", f"num-{len(feat_sampled)}_sampled_sddip_pred_and_re_maxl-{max_lag}_{t}.pkl")
-        torch.save(data_sampled, save_path)
-        return data_sampled
-
-
-
-    def compare_obj(self, data_sampled, fw_n_samples=20):
-        """
-        只是比较obj
-        :return:
-        """
-        compare_obj_result = {
-            "obj_pred": [],
-            "obj_pred_re": [],
-        }
-        feat_sampled = data_sampled["feat"]
-        cuts_pred = data_sampled["cuts_pred"]
-        cuts_pred_re = data_sampled["cuts_pred_re"]
-
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
-
-        num_instances = len(data_sampled["feat"])
-        for index in tqdm(range(num_instances), desc="obj compare"):
-            print(f"obj compare step: {index} / {num_instances}")
-            samples = inference_sddip.get_fw_samples(feat_sampled[index], fw_n_samples)
-            # pred
-            obj_list_pred = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_pred[index])
-            # pred_re
-            obj_list_pred_re = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_pred_re[index])
-
-            compare_obj_result["obj_pred"].append(obj_list_pred)
-            compare_obj_result["obj_pred_re"].append(obj_list_pred_re)
-        return compare_obj_result
-
-    def compare(self, fw_n_samples, max_lag=None, data_sampled=None):
-
-        """
-        6. 比较时间和obj
-            sddip
-            inference
-            inference + recalculate
-        """
-        '''
-        data_sampled = {
-            "instance_index": [],
-            "feat": [],
-            "scenario": [],
-            "cuts": [],
-            "x_cuts": []
-            "inference_calculate_X_time": []
-            "cuts_pred": []
-            "x_calculated": []
-            "time_sddip"
-            "obj_sddip"
-            "cut_sddip"
-            "cuts_pred_re" 
-            "recalculate_time"
-        }
-        '''
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
-        compare_result = {
-            "instance_id": data_sampled["instance_index"],
-            "obj_pred": [],  # list [num_instances, num_scenarios]
-            "time_pred": [],
-            "obj_pred_re": [],
-            "time_pred_re": [],
-            "obj_sddip": [],
-            "time_sddip": [],
-            "obj_nocut": [],
-        }
-        if max_lag is not None:
-            for i in range(max_lag):
-                compare_result[f"obj_pred_{i + 1}_lag"] = []
-                compare_result[f"time_pred_{i + 1}_lag"] = []
-                compare_result[f"obj_pred_re_{i + 1}_lag"] = []
-                compare_result[f"time_pred_re_{i + 1}_lag"] = []
-
-        # obj compare
-        """
-        使用相同的前向路径，记录不同路径对应的obj
-        """
-        # cuts_sddip = data_sampled["cuts_sddip"]
-        time_sddip = data_sampled["time_sddip"]
-        cuts_pred = data_sampled["cuts_pred"]
-        inference_time = data_sampled["inference_calculate_X_time"]
-        cuts_pred_re = data_sampled["cuts_pred_re"]
-        recalculate_time = data_sampled["recalculate_time"]
-        feat_sampled = data_sampled["feat"]
-
-        num_instances = len(time_sddip)
-        for index in tqdm(range(num_instances), desc="obj compare"):
-            print(f"obj compare step: {index} / {num_instances}")
-            samples = inference_sddip.get_fw_samples(feat_sampled[index], fw_n_samples)
-            # pred
-            obj_list_pred = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_pred[index])
-            # pred_re
-            obj_list_pred_re = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_pred_re[index])
-            # sddip
-            # obj_list_sddip = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_sddip[index])
-            # no cut
-            obj_list_nocut = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, None)
-
-            compare_result["obj_pred"].append(obj_list_pred)
-            compare_result["time_pred"].append(inference_time[index])
-            compare_result["obj_pred_re"].append(obj_list_pred_re)
-            compare_result["time_pred_re"].append(inference_time[index] + recalculate_time[index])
-            # compare_result["obj_sddip"].append(obj_list_sddip)
-            compare_result["time_sddip"].append(time_sddip[index])
-            compare_result["obj_nocut"].append(obj_list_nocut)
-            if max_lag is not None:
-                # n lag
-                for i in range(max_lag):
-                    obj_list_lag = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, data_sampled[f"cuts_pred_{i + 1}_lag"][index])
-                    compare_result[f"obj_pred_{i + 1}_lag"].append(obj_list_lag)
-                    compare_result[f"time_pred_{i + 1}_lag"].append(inference_time[index] + data_sampled[f"time_pred_{i + 1}_lag"][index])
-                    obj_list_lag_re = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, data_sampled[f"cuts_pred_re_{i + 1}_lag"][index])
-                    compare_result[f"obj_pred_re_{i + 1}_lag"].append(obj_list_lag_re)
-                    # compare_result[f"time_pred_re_{i + 1}_lag"].append(inference_time[index] + recalculate_time[index] + data_sampled[f"time_pred_re_{i + 1}_lag"][index])
-
-        torch.save(compare_result, os.path.join(self.config.result_path, "compare", f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
-
-        return compare_result
-
-    def compare_stage(self, fw_n_samples, max_lag=None, data_sampled=None):
-
-        """
-        6. 比较时间和obj  不同阶段的obj分别记录
-            sddip
-            inference
-            inference + recalculate
-        """
-        '''
-        data_sampled = {
-            "instance_index": [],
-            "feat": [],
-            "scenario": [],
-            "cuts": [],
-            "x_cuts": []
-            "inference_calculate_X_time": []
-            "cuts_pred": []
-            "x_calculated": []
-            "time_sddip"
-            "obj_sddip"
-            "cut_sddip"
-            "cuts_pred_re" 
-            "recalculate_time"
-        }
-        '''
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
-        compare_result = {
-            "instance_id": data_sampled["instance_index"],
-            "obj_pred": [],  # list [num_instances, num_scenarios]
-            "time_pred": [],
-            "obj_pred_re": [],
-            "time_pred_re": [],
-            "obj_sddip": [],
-            "time_sddip": [],
-            "obj_nocut": [],
-        }
-        if max_lag is not None:
-            for i in range(max_lag):
-                compare_result[f"obj_pred_{i + 1}_lag"] = []
-                compare_result[f"time_pred_{i + 1}_lag"] = []
-                compare_result[f"obj_pred_re_{i + 1}_lag"] = []
-                compare_result[f"time_pred_re_{i + 1}_lag"] = []
-
-        # obj compare
-        """
-        使用相同的前向路径，记录不同路径对应的obj
-        """
-        cuts_sddip = data_sampled["cuts_sddip"]
-        time_sddip = data_sampled["time_sddip"]
-        cuts_pred = data_sampled["cuts_pred"]
-        inference_time = data_sampled["inference_calculate_X_time"]
-        cuts_pred_re = data_sampled["cuts_pred_re"]
-        recalculate_time = data_sampled["recalculate_time"]
-        feat_sampled = data_sampled["feat"]
-
-        num_instances = len(time_sddip)
-        for index in tqdm(range(num_instances), desc="obj compare"):
-            print(f"obj compare step: {index} / {num_instances}")
-            samples = inference_sddip.get_fw_samples(feat_sampled[index], fw_n_samples)
-            # pred
-            obj_list_pred = inference_sddip.forward_obj_calculate_stage(feat_sampled[index], samples, cuts_pred[index])
-            # pred_re
-            obj_list_pred_re = inference_sddip.forward_obj_calculate_stage(feat_sampled[index], samples, cuts_pred_re[index])
-            # sddip
-            obj_list_sddip = inference_sddip.forward_obj_calculate_stage(feat_sampled[index], samples, cuts_sddip[index])
-            # no cut
-            obj_list_nocut = inference_sddip.forward_obj_calculate_stage(feat_sampled[index], samples, None)
-
-            compare_result["obj_pred"].append(obj_list_pred)
-            compare_result["time_pred"].append(inference_time[index])
-            compare_result["obj_pred_re"].append(obj_list_pred_re)
-            compare_result["time_pred_re"].append(inference_time[index] + recalculate_time[index])
-            compare_result["obj_sddip"].append(obj_list_sddip)
-            compare_result["time_sddip"].append(time_sddip[index])
-            compare_result["obj_nocut"].append(obj_list_nocut)
-            if max_lag is not None:
-                # n lag
-                for i in range(max_lag):
-                    obj_list_lag = inference_sddip.forward_obj_calculate_stage(feat_sampled[index], samples, data_sampled[f"cuts_pred_{i + 1}_lag"][index])
-                    compare_result[f"obj_pred_{i + 1}_lag"].append(obj_list_lag)
-                    compare_result[f"time_pred_{i + 1}_lag"].append(inference_time[index] + data_sampled[f"time_pred_{i + 1}_lag"][index])
-                    obj_list_lag_re = inference_sddip.forward_obj_calculate_stage(feat_sampled[index], samples, data_sampled[f"cuts_pred_re_{i + 1}_lag"][index])
-                    compare_result[f"obj_pred_re_{i + 1}_lag"].append(obj_list_lag_re)
-                    compare_result[f"time_pred_re_{i + 1}_lag"].append(inference_time[index] + recalculate_time[index] + data_sampled[f"time_pred_re_{i + 1}_lag"][index])
-
-        torch.save(compare_result, os.path.join(self.config.result_path, "compare", f"num-{num_instances}_compare_result_fw-{fw_n_samples}_stage.pkl"))
-
-        return compare_result
-
-
-    def compare_mutil_process(self, fw_n_samples, max_lag, data_sampled=None, num_processes=None):
-        """
-        6. 比较时间和obj
-            sddip
-            inference
-            inference + recalculate
-        """
-        from tqdm import tqdm
-        import multiprocessing
-        from functools import partial
-
-        if data_sampled is None:
-            data_sampled = torch.load(os.path.join(self.config.result_path, "compare", f"num-50_sampled_sddip_fixed.pkl"))
-
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
-
-        compare_result = {
-            "instance_id": data_sampled["instance_index"],
-            "obj_pred": [],  # list [num_instances, num_scenarios]
-            "time_pred": [],
-            "obj_pred_re": [],
-            "time_pred_re": [],
-            "obj_sddip": [],
-            "time_sddip": [],
-            "obj_nocut": [],
-        }
-
-        for i in range(max_lag):
-            compare_result[f"obj_pred_{i + 1}_lag"] = []
-            compare_result[f"time_pred_{i + 1}_lag"] = []
-            compare_result[f"obj_pred_re_{i + 1}_lag"] = []
-            compare_result[f"time_pred_re_{i + 1}_lag"] = []
-
-        # Prepare data for multiprocessing
-        cuts_sddip = data_sampled["sddip_cuts"]
-        time_sddip = data_sampled["sddip_time"]
-        cuts_pred = data_sampled["cuts_pred"]
-        inference_time = data_sampled["inference_calculate_X_time"]
-        cuts_pred_re = data_sampled["cuts_pred_re"]
-        recalculate_time = data_sampled["recalculate_time"]
-        feat_sampled = data_sampled["feat"]
-        num_instances = len(time_sddip)
-
-        # Create a list of all indices to process
-        indices = list(range(num_instances))
-
-        # Determine number of processes to use
-        if num_processes is None:
-            num_processes = multiprocessing.cpu_count()
-
-        # Function to process a single index
-        def process_index(index, inference_sddip, feat_sampled, cuts_pred, cuts_pred_re,
-                          cuts_sddip, inference_time, recalculate_time, data_sampled, max_lag):
-            samples = inference_sddip.get_fw_samples(feat_sampled[index], fw_n_samples)
-
-            # pred
-            obj_list_pred = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_pred[index])
-            # pred_re
-            obj_list_pred_re = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_pred_re[index])
-            # sddip
-            obj_list_sddip = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, cuts_sddip[index])
-            # no cut
-            obj_list_nocut = inference_sddip.forward_obj_calculate(feat_sampled[index], samples, None)
-
-            result = {
-                "index": index,
-                "obj_pred": obj_list_pred,
-                "obj_pred_re": obj_list_pred_re,
-                "obj_sddip": obj_list_sddip,
-                "obj_nocut": obj_list_nocut,
-                "time_pred": inference_time[index],
-                "time_pred_re": inference_time[index] + recalculate_time[index],
-                "time_sddip": time_sddip[index],
-            }
-
-            # n lag
-            for i in range(max_lag):
-                obj_list_lag = inference_sddip.forward_obj_calculate(feat_sampled[index], samples,
-                                                                     data_sampled[f"cuts_pred_{i + 1}_lag"][index])
-                result[f"obj_pred_{i + 1}_lag"] = obj_list_lag
-                result[f"time_pred_{i + 1}_lag"] = inference_time[index] + data_sampled[f"time_pred_{i + 1}_lag"][index]
-
-                obj_list_lag_re = inference_sddip.forward_obj_calculate(feat_sampled[index], samples,
-                                                                        data_sampled[f"cuts_pred_re_{i + 1}_lag"][
-                                                                            index])
-                result[f"obj_pred_re_{i + 1}_lag"] = obj_list_lag_re
-                result[f"time_pred_re_{i + 1}_lag"] = inference_time[index] + recalculate_time[index] + \
-                                                      data_sampled[f"time_pred_re_{i + 1}_lag"][index]
-
+        def dict_tensorlist_to_arraylist(d):
+            """
+            将字典中所有 value 为 list 且内部为 tensor 的项，
+            转换为 list 且内部为 numpy.ndarray。
+            其他类型保持不变。
+            """
+            result = {}
+            for k, v in d.items():
+                if isinstance(v, list) and all(isinstance(x, torch.Tensor) for x in v):
+                    result[k] = [x.detach().cpu().numpy() for x in v]
+                else:
+                    result[k] = v
             return result
 
-        # Create a partial function with fixed arguments
-        partial_process = partial(process_index,
-                                  inference_sddip=inference_sddip,
-                                  feat_sampled=feat_sampled,
-                                  cuts_pred=cuts_pred,
-                                  cuts_pred_re=cuts_pred_re,
-                                  cuts_sddip=cuts_sddip,
-                                  inference_time=inference_time,
-                                  recalculate_time=recalculate_time,
-                                  data_sampled=data_sampled,
-                                  max_lag=max_lag)
+        data_sampled = dict_tensorlist_to_arraylist(data_sampled)
 
-        # Process in parallel
-        with multiprocessing.Pool(processes=num_processes) as pool:
-            results = list(tqdm(pool.imap(partial_process, indices), total=len(indices), desc="Processing instances"))
-
-        # Sort results by original index (important if order matters)
-        results.sort(key=lambda x: x['index'])
-
-        # Combine results into the final structure
-        for res in results:
-            compare_result["obj_pred"].append(res["obj_pred"])
-            compare_result["time_pred"].append(res["time_pred"])
-            compare_result["obj_pred_re"].append(res["obj_pred_re"])
-            compare_result["time_pred_re"].append(res["time_pred_re"])
-            compare_result["obj_sddip"].append(res["obj_sddip"])
-            compare_result["time_sddip"].append(res["time_sddip"])
-            compare_result["obj_nocut"].append(res["obj_nocut"])
-
-            for i in range(max_lag):
-                compare_result[f"obj_pred_{i + 1}_lag"].append(res[f"obj_pred_{i + 1}_lag"])
-                compare_result[f"time_pred_{i + 1}_lag"].append(res[f"time_pred_{i + 1}_lag"])
-                compare_result[f"obj_pred_re_{i + 1}_lag"].append(res[f"obj_pred_re_{i + 1}_lag"])
-                compare_result[f"time_pred_re_{i + 1}_lag"].append(res[f"time_pred_re_{i + 1}_lag"])
-
-        torch.save(compare_result,
-                   os.path.join(self.config.result_path, "compare", f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
-
-        return compare_result
+        print("输出data_sampled：")
+        print(data_sampled)
 
 
-    def calculate_obj_with_sddip_iteration(self, index, fw_n_samples, feat_sampled, cuts_pred, cut_pred_init_time, cuts_pred_re=None, cut_pred_re_init_time=None):
-        """
-        在给定的cut基础上迭代sddip，记录每次迭代的obj（用于计算相对误差）和时间，用于绘制进一步迭代的比较图
-        需要计算两种：没有cut的sddip收敛，以及在预测cut的基础上的结果
-        :return:
-        """
-        inference_sddip = Infer(n_stages=self.config.num_stage,
-                                n_realizations=self.config.n_realizations,
-                                N_VARS=self.config.n_vars,
-                                train_data_path=self.config.train_data_path,
-                                result_path=self.config.result_path
-                                )
+        # result = []
+        # for instance_index in range(num_instances):
+        #     result.append(_process_instance(instance_index, data_sampled, fw_n_samples, self.config))
 
-        result = {}
+        num_workers = min(mp.cpu_count(), 5)  # 限制最大并行数，防止CPU爆满
+        print(f"Using {num_workers} processes for parallel comparison...")
 
-        time_list, obj_list, LB_list = inference_sddip.sddip_fw_n_samples(feat_sampled, None, fw_n_samples)
-        result["sddip_time"] = time_list
-        result["sddip_obj"] = obj_list
-        result["sddip_LB"] = LB_list
+        # with mp.Pool(processes=num_workers) as pool:
+        #     func = partial(_process_instance, data_sampled=data_sampled, fw_n_samples=fw_n_samples, config=self.config)
+        #     result = pool.map(func, range(num_instances))
 
-        time_list_pred, obj_list_pred, LB_list_pred = inference_sddip.sddip_fw_n_samples(feat_sampled, cuts_pred, fw_n_samples)
-        result["pred_time"] = [time + cut_pred_init_time for time in time_list_pred]
-        result["pred_obj"] = obj_list_pred
-        result["pred_LB"] = LB_list_pred
+        func = partial(_process_instance,
+                       data_sampled=data_sampled,
+                       fw_n_samples=fw_n_samples,
+                       config=self.config)
+        result = []
+        timeout_sec = 3600  # 每个进程最多运行 3600 秒
 
-        if cuts_pred_re is not None:
-            time_list_re, obj_list_re, LB_list_re = inference_sddip.sddip_fw_n_samples(feat_sampled, cuts_pred_re,
-                                                                                       fw_n_samples)
-            result["pred_re_time"] = [time + cut_pred_re_init_time for time in time_list_re]
-            result["pred_re_LB"] = LB_list_re
-            result["pred_re_obj"] = obj_list_re
+        with mp.Pool(processes=num_workers) as pool:
+            async_results = [pool.apply_async(func, args=(i,)) for i in range(num_instances)]
 
-        torch.save(result,
-                   os.path.join(r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\NN_torch_24\result_sigma_7_30\compare\calculate_sddip_with_sddip", f"calculate_obj_with_sddip_result_{index}.pkl"))
+            for i, async_result in enumerate(async_results):
+                try:
+                    res = async_result.get(timeout=timeout_sec)
+                    result.append(res)
+                except mp.TimeoutError:
+                    print(f"⚠️ Instance {i} timed out after {timeout_sec} seconds!")
+                    # results.append(None)  # 可用占位符
+                except Exception as e:
+                    print(f"❌ Instance {i} failed with error: {e}")
+                    # results.append(None)
 
-        return result
 
+        # 保存原始结果
+        torch.save(result, os.path.join(self.config.result_path, "compare", f"{file_name}",
+                                        f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
+
+        # 聚合结果
+        integrated_result = self.integrate_result(result)
+
+        torch.save(integrated_result, os.path.join(self.config.result_path, "compare", f"{file_name}",
+                                                   f"num-{num_instances}_compare_result_fw-{fw_n_samples}_integrated.pkl"))
+
+        print("Parallel comparison complete.")
+        return result, integrated_result
+
+
+def _process_instance(instance_index, data_sampled, fw_n_samples, config):
+    """单个样本的处理逻辑，供多进程调用"""
+
+    # === 每个进程单独日志 ===
+    log_dir = os.path.join(config.result_path, "compare_logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"process_{instance_index}.log")
+
+    # 清空旧日志处理器
+    for h in logging.root.handlers[:]:
+        logging.root.removeHandler(h)
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"[%(asctime)s][Process {instance_index}][%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, mode='w', encoding='utf-8'),
+            # logging.StreamHandler()  # 若希望仍打印到控制台可加这一行
+        ]
+    )
+
+    logger = logging.getLogger(__name__)
+    logger.info(f"Process {instance_index} start")
+
+    # === 正式计算 ===
+    inference_sddip = Infer(
+        n_stages=config.num_stage,
+        n_realizations=config.n_realizations,
+        N_VARS=config.n_vars,
+        train_data_path=config.train_data_path,
+        result_path=config.result_path
+    )
+
+    feat = data_sampled["feat"][instance_index]
+    cuts_pred = data_sampled["cuts_pred"][instance_index]
+
+    logger.info(cuts_pred.shape)
+
+    logger.info(cuts_pred)
+
+    logger.info("Start recalculate cuts")
+    cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, inference_sddip, logger)
+    logger.info("Recalculate complete")
+
+    logger.info("Start calculate obj")
+    obj_list_nocut, obj_list_pred, obj_list_pred_re = calculate_obj(
+        feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger
+    )
+    logger.info("Calculate obj complete")
+
+    instance_dict = {
+        "instance_index": instance_index,
+        "feat": feat,
+        "scenario": data_sampled["scenario"][instance_index],
+        "cuts": data_sampled["cuts"][instance_index],
+        "x_cuts": data_sampled["x_cuts"][instance_index],
+        "time_sddip": data_sampled["time_sddip"][instance_index],
+        "obj_sddip_only_one": data_sampled["obj_sddip_only_one"][instance_index],
+        "time_pred": data_sampled["time_pred"][instance_index],
+        "cuts_pred": cuts_pred,
+        "x_calculated": data_sampled["x_calculated"][instance_index],
+        "recalculate_time": recalculate_time,
+        "time_pred_re": data_sampled["time_pred"][instance_index] + recalculate_time,
+        "obj_nocut": obj_list_nocut,
+        "obj_pred": obj_list_pred,
+        "obj_pred_re": obj_list_pred_re
+    }
+
+    logger.info(f"Process {instance_index} done.")
+    return instance_dict
+
+def _recalculate_cuts(feat, cuts_pred, inference_sddip, logger):
+    """
+    处理一个instance
+    重新计算intercept
+    """
+
+    # inference_sddip = Infer(n_stages=self.config.num_stage,
+    #                         n_realizations=self.config.n_realizations,
+    #                         N_VARS=self.config.n_vars,
+    #                         train_data_path=self.config.train_data_path,
+    #                         result_path=self.config.result_path
+    #                         )
+    recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat, cuts_pred, logger)
+    return cuts_predicted_re, recalculate_time
+
+
+def calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger):
+    """
+    针对一个instance，由于要使用相同的sample，只能将nocut、pred、pred_re放在一起
+    只是计算不同cuts对应的obj
+    """
+
+    samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
+    # nocut
+    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
+    logger.info("calculate nocut obj complete")
+    # pred
+    obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts_pred)
+    logger.info("calculate pred obj complete")
+    # pred_re
+    obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts_pred_re)
+    logger.info("calculate pred_re obj complete")
+    return obj_list_nocut, obj_list_pred, obj_list_pred_re

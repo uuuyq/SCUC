@@ -37,6 +37,19 @@ class CutDataset(Dataset):
     def __len__(self):
         return self.feat_tensor.shape[0]
 
+class CutDatasetNormalized(Dataset):
+    def __init__(self, feat_tensor, scenario_tensor, x_tensor, cut_tensor):
+        self.feat_tensor = feat_tensor
+        self.scenario_tensor = scenario_tensor
+        self.x_tensor = x_tensor
+        self.cut_tensor = cut_tensor
+
+    def __getitem__(self, idx):
+        return self.feat_tensor[idx], self.scenario_tensor[idx], self.cut_tensor[idx], self.x_tensor[idx]
+
+    def __len__(self):
+        return self.feat_tensor.shape[0]
+
 
 # class StandardScaler:
 #     def __init__(self):
