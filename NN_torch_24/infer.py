@@ -158,7 +158,7 @@ class Infer:
         time_list, obj_list, LB_list = algo.run_sddip_fw_n_samples(fw_n_samples)
         return time_list, obj_list, LB_list
 
-    def sddip_n_lag(self, feat, cuts, max_lag):
+    def sddip_n_lag(self, feat, cuts, max_lag, logger=None):
         algo = self._get_algo(feat)
         if cuts is not None:
             # 添加cuts
@@ -167,7 +167,7 @@ class Infer:
                     # i:一定要用0, k和t:对应piece和阶段
                     algo.cuts_storage.add(0, k, t, cuts[t][k].tolist())
             algo.cut_add_flag = True
-        lag_time_list, lag_obj_list, lag_cuts_list = algo.run_n_lag(max_lag)
+        lag_time_list, lag_obj_list, lag_cuts_list = algo.run_n_lag(max_lag, logger)
         return lag_time_list, lag_obj_list, lag_cuts_list
 
 

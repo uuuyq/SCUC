@@ -185,7 +185,9 @@ class Algorithm:
         cuts_padded = pad_sequence(cuts_tensor_list, batch_first=True)  # shape: (n_stage-1, max_num_cuts, cut_dim)
         return cuts_padded
 
-    def run_n_lag(self, max_lag):
+    def run_n_lag(self, max_lag, logger=None):
+        if logger is not None:
+            self.logger = logger
         self.logger.info("#### SDDiP-Algorithm started ####")
         self.n_samples = self.n_samples_primary
 

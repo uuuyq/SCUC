@@ -1,5 +1,6 @@
 import copy
 import logging
+import time
 
 import torch
 from torch.utils.data import DataLoader, random_split
@@ -535,7 +536,7 @@ class TrainerUpdate:
                                         f"num-{num_instances}_data_sampled_pred.pkl"))
         return data_sampled
 
-    def compare_multiprocess(self, num_instances, fw_n_samples, file_name):
+    def compare_multiprocess(self, num_instances, fw_n_samples, file_name, timeout_sec, max_lag, num_threads):
         """
         使用多进程方式比较时间和obj。
         注意：如果CPU紧张，pred或re的耗时可能会略有上升。
@@ -579,7 +580,7 @@ class TrainerUpdate:
         # for instance_index in range(num_instances):
         #     result.append(_process_instance(instance_index, data_sampled, fw_n_samples, self.config))
 
-        num_workers = min(mp.cpu_count(), 5)  # 限制最大并行数，防止CPU爆满
+        num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
         print(f"Using {num_workers} processes for parallel comparison...")
 
         # with mp.Pool(processes=num_workers) as pool:
@@ -589,9 +590,9 @@ class TrainerUpdate:
         func = partial(_process_instance,
                        data_sampled=data_sampled,
                        fw_n_samples=fw_n_samples,
-                       config=self.config)
+                       config=self.config,
+                       max_lag=max_lag)
         result = []
-        timeout_sec = 3600  # 每个进程最多运行 3600 秒
 
         with mp.Pool(processes=num_workers) as pool:
             async_results = [pool.apply_async(func, args=(i,)) for i in range(num_instances)]
@@ -599,7 +600,8 @@ class TrainerUpdate:
             for i, async_result in enumerate(async_results):
                 try:
                     res = async_result.get(timeout=timeout_sec)
-                    result.append(res)
+                    if res is not None:  # 只保存有效结果
+                        result.append(res)
                 except mp.TimeoutError:
                     print(f"⚠️ Instance {i} timed out after {timeout_sec} seconds!")
                     # results.append(None)  # 可用占位符
@@ -622,7 +624,7 @@ class TrainerUpdate:
         return result, integrated_result
 
 
-def _process_instance(instance_index, data_sampled, fw_n_samples, config):
+def _process_instance(instance_index, data_sampled, fw_n_samples, max_lag, config):
     """单个样本的处理逻辑，供多进程调用"""
 
     # === 每个进程单独日志 ===
@@ -662,15 +664,36 @@ def _process_instance(instance_index, data_sampled, fw_n_samples, config):
 
     logger.info(cuts_pred)
 
+    """不知道什么原因，recalculate在有些样本中耗时很长，控制运行时长，超时直接舍弃该样本返回"""
+    time_limit = 60 * 70
     logger.info("Start recalculate cuts")
-    cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, inference_sddip, logger)
+
+    # cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, inference_sddip, logger)
+
+    status, result = run_with_timeout(
+        _recalculate_cuts,
+        args=(feat, cuts_pred, inference_sddip, logger),
+        timeout=time_limit,
+        logger=logger
+    )
+    # 根据返回状态控制主程序逻辑
+    if status == 'timeout':
+        logger.warning("Recalculate 超时，直接返回默认值")
+        return None
+    elif status == 'error':
+        logger.error("Recalculate 执行失败")
+        return None
+    else:  # 正常完成
+        cuts_pred_re, recalculate_time = result
+
+
     logger.info("Recalculate complete")
 
-    logger.info("Start calculate obj")
-    obj_list_nocut, obj_list_pred, obj_list_pred_re = calculate_obj(
+    logger.info("Start calculate obj with pred cuts")
+    obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
         feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger
     )
-    logger.info("Calculate obj complete")
+    logger.info("Calculate obj with pred cuts complete")
 
     instance_dict = {
         "instance_index": instance_index,
@@ -685,10 +708,28 @@ def _process_instance(instance_index, data_sampled, fw_n_samples, config):
         "x_calculated": data_sampled["x_calculated"][instance_index],
         "recalculate_time": recalculate_time,
         "time_pred_re": data_sampled["time_pred"][instance_index] + recalculate_time,
+        "cuts_pred_re": cuts_pred_re,
         "obj_nocut": obj_list_nocut,
         "obj_pred": obj_list_pred,
         "obj_pred_re": obj_list_pred_re
     }
+
+    # 进一步执行sddip
+    if max_lag > 0:
+        lag_time_list, lag_obj_list, lag_cuts_list, lag_time_list_re, lag_obj_list_re, lag_cuts_list_re = (
+            pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger))
+        # 计算对应的obj
+        for i in range(max_lag):
+            logger.info(f"Start calculate obj with additional_sddip_cuts: {i} max_lag: {max_lag}")
+            obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
+                feat, lag_cuts_list[i], lag_cuts_list_re[i], inference_sddip, fw_n_samples, logger
+            )
+            instance_dict[f"time_pred_sddip_{i + 1}"] = lag_time_list[i]
+            instance_dict[f"time_pred_re_sddip_{i + 1}"] = lag_time_list_re[i]
+            instance_dict[f"cuts_pred_sddip_{i + 1}"] = lag_cuts_list[i]
+            instance_dict[f"cuts_pred_re_sddip_{i + 1}"] = lag_cuts_list_re[i]
+            instance_dict[f"obj_pred_sddip_{i + 1}"] = obj_list_pred
+            instance_dict[f"obj_pred_re_sddip_{i + 1}"] = obj_list_pred_re
 
     logger.info(f"Process {instance_index} done.")
     return instance_dict
@@ -709,7 +750,7 @@ def _recalculate_cuts(feat, cuts_pred, inference_sddip, logger):
     return cuts_predicted_re, recalculate_time
 
 
-def calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger):
+def _calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger):
     """
     针对一个instance，由于要使用相同的sample，只能将nocut、pred、pred_re放在一起
     只是计算不同cuts对应的obj
@@ -726,3 +767,65 @@ def calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, 
     obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts_pred_re)
     logger.info("calculate pred_re obj complete")
     return obj_list_nocut, obj_list_pred, obj_list_pred_re
+
+
+def pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger):
+    """
+    使用预测的cuts进行n次sddip，记录增加后的所有cuts，也顺便把obj也记录了
+        pred + 1 lag
+        pred_re + 2 lag
+        ...
+        pred + n lag
+        pred_re + n lag
+    """
+
+    lag_time_list, lag_obj_list, lag_cuts_list = inference_sddip.sddip_n_lag(feat, cuts_pred, max_lag, logger)
+    lag_time_list_re, lag_obj_list_re, lag_cuts_list_re = inference_sddip.sddip_n_lag(feat, cuts_pred_re, max_lag, logger)
+
+    return lag_time_list, lag_obj_list, lag_cuts_list, lag_time_list_re, lag_obj_list_re, lag_cuts_list_re
+
+
+
+import logging
+import threading
+import queue
+
+def run_with_timeout(func, args=(), kwargs=None, timeout=60, logger=None):
+    """
+    在独立线程中执行函数 func ，超时则返回 ('timeout', None)，
+    正常结束返回 ('ok', func_result)，出错返回 ('error', exception)。
+    ✅ 不会再触发 “daemonic processes are not allowed to have children”
+    """
+    if kwargs is None:
+        kwargs = {}
+    q = queue.Queue()
+
+    def wrapper():
+        try:
+            result = func(*args, **kwargs)
+            q.put(('ok', result))
+        except Exception as e:
+            if logger:
+                logger.exception("Function execution failed.")
+            q.put(('error', e))
+
+    # 启动线程
+    t = threading.Thread(target=wrapper, daemon=True)
+    t.start()
+
+    # 等待执行结果或超时
+    t.join(timeout)
+
+    if t.is_alive():
+        if logger:
+            logger.warning(f"⚠️ 超时 {timeout}s，线程未完成（返回 timeout）")
+        return 'timeout', None
+
+    # 正常结束时从队列取结果
+    if not q.empty():
+        return q.get()
+    else:
+        return 'error', None
+
+
+
