@@ -176,7 +176,7 @@ def compare(trainer):
         cut_pred_init_time = sampled_pred_re["inference_calculate_X_time"][index]
         cuts_pred_re = sampled_pred_re["cuts_pred_re"][index]
         cut_pred_re_init_time = sampled_pred_re["inference_calculate_X_time"][index] + sampled_pred_re["recalculate_time"][index]
-        result = trainer.calculate_obj_with_sddip_iteration(index, fw_n_samples, feat_sampled, cuts_pred, cut_pred_init_time, cuts_pred_re, cut_pred_re_init_time)
+        # result = trainer.calculate_obj_with_sddip_iteration(index, fw_n_samples, feat_sampled, cuts_pred, cut_pred_init_time, cuts_pred_re, cut_pred_re_init_time)
 
 
 def main(trainer):

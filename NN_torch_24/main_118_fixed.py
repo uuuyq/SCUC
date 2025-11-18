@@ -1,17 +1,24 @@
 import math
 import os
+
+from NN_torch_24.trainer_fixed import TrainerFixed
 from config import Config
 
+
 def compare(trainer, config):
-    num_instances = 9
-    num_threads = 3
-    max_lag = 4
-    config.compare_path = os.path.join(result_path, "compare",
-                                       f"quick_{config.num_data}_train_data_(1024,1024)_standard_gamma-{math.log10(gamma)}_max_lag-{max_lag}_max")
-    result = trainer.compare_quick(
-        num_instances=num_instances,
+    num_instances = 20
+    num_threads = 5
+    max_iterations = 40
+    max_lag = 40
+    config.compare_path = os.path.join(result_path, "compare", f"fixed_{config.num_data}_train_data_(1024,1024)_standard_gamma-{math.log10(gamma)}_max_lag-{max_lag}_max_iterations-{max_iterations}")
+    result = trainer.compare_complete(
+        num_instances = num_instances,
+        # TODO 200个路径采样
         fw_n_samples=50,
+        max_iterations=max_iterations,   # sddip迭代的最大次数，以及pred sddip和pred_re sddip 的最大迭代次数
+        # TODO 绘制这个图只需要几个数据就行
         max_lag=max_lag,
+        sddip_timeout_sec=None,
         compare_timeout_sec=None,
         num_threads=num_threads,
     )
@@ -19,16 +26,12 @@ def compare(trainer, config):
 
 
 
-
 def main(trainer, config):
     trainer.load_dataset()
-
 
     trainer.train()
 
     compare(trainer, config)
-
-
 
 if __name__ == '__main__':
     train_data_path = r"..\data_gen_24_bus118\train_data"
@@ -36,7 +39,7 @@ if __name__ == '__main__':
     result_path = r".\result_118_11"
     gamma = 1e8
     config = Config(
-        num_data=1000,
+        num_data=3000,
         num_stage=24,
         n_vars=378,
         feat_dim=238,  # instance_index, stage, feat(118 * 2)
@@ -58,7 +61,6 @@ if __name__ == '__main__':
         standard_flag=True,
     )
     # 模型训练后数据保存位置
-    from trainer_fixed import TrainerFixed
 
     trainer = TrainerFixed(config)
     main(trainer, config)

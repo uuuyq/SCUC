@@ -127,5 +127,5 @@ def collect_data_update(train_data_path, tensor_path, num_data, num_cuts, additi
 if __name__ == '__main__':
     train_data_path = r"../data_gen_24_bus118\train_data"
     tensor_path = r"tensor_118"
-    num_data = 3000
+    num_data = 1000
     collect_data_update(train_data_path, tensor_path, num_data, 15, additional_data="prefix")

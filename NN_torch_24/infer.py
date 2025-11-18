@@ -1,5 +1,8 @@
 import logging
 import os
+
+import numpy
+import numpy as np
 import torch
 from sddip_script_update import sddipclassical
 import time
@@ -15,75 +18,11 @@ class Infer:
         self.train_data_path = train_data_path
         self.result_path = result_path
 
-    # 给定cuts，计算前向过程的obj
-    # def forward_obj_calculate(self, feat, cuts_test, cuts_predicted, recalculate_flag=False):
-    #
-    #     '''
-    #     :param feat: [n_stages-1, n_feats]
-    #     :param cuts_test: [n_stages-1, n_pieces, N_VARS-1]
-    #     :param cuts_predicted: [n_stages-1, n_pieces, N_VARS-1]
-    #     :param recalculate_flag: boolean
-    #     :return:
-    #     '''
-    #
-    #     n_pieces = cuts_predicted.shape[1]
-    #
-    #     # 重算截距？
-    #     if recalculate_flag:
-    #         if cuts_predicted.size(-1) > self.N_VARS:
-    #             cuts_predicted = cuts_predicted[..., :self.N_VARS]
-    #         algo = self._get_algo(feat)
-    #         cuts_predicted = algo.intercept_recalculate(cuts_predicted)
-    #         cuts_predicted = [
-    #             [cuts_predicted[(t, k)] for k in range(n_pieces)]
-    #             for t in range(self.n_stages - 1)
-    #         ]
-    #         cuts_predicted = torch.tensor(cuts_predicted).float()
-    #
-    #     algo = self._get_algo(feat)
-    #     # 前向采样个数
-    #     samples = algo.sc_sampler.generate_samples(self.fw_n_samples)
-    #
-    #     # 对照 no cut
-    #     algo.cut_add_flag = False
-    #     # 检查是否真的没有cut
-    #     if not algo.cuts_storage.is_empty():
-    #         raise RuntimeError("Expected cuts_storage to be empty, but it is not.")
-    #     v_opt_list = algo.forward_pass(0, samples)
-    #     obj_nocut = np.mean(np.array(v_opt_list))
-    #
-    #     # 测试 test cut
-    #     algo.cuts_storage = result_Dict("cuts_storage1")
-    #     # 检查是否真的没有cut
-    #     if not algo.cuts_storage.is_empty():
-    #         raise RuntimeError("Expected cuts_storage to be empty, but it is not.")
-    #     for t in range(self.n_stages - 1):
-    #         for k in range(cuts_test.shape[1]):
-    #             # i:随便写 k:  t:指定阶段
-    #             algo.cuts_storage.add(0, k, t, cuts_test[t][k].tolist())
-    #     algo.cut_add_flag = True
-    #     v_opt_list = algo.forward_pass(0, samples)
-    #     obj_test = np.mean(np.array(v_opt_list))
-    #
-    #     # 预测 pred cut
-    #     algo.cuts_storage = result_Dict("cuts_storage2")
-    #     # 检查是否真的没有cut
-    #     if not algo.cuts_storage.is_empty():
-    #         raise RuntimeError("Expected cuts_storage to be empty, but it is not.")
-    #     for t in range(self.n_stages - 1):
-    #         for k in range(cuts_predicted.shape[1]):
-    #             # i:随便写 k:  t:指定阶段
-    #             algo.cuts_storage.add(0, k, t, cuts_predicted[t][k].tolist())
-    #     algo.cut_add_flag = True
-    #     v_opt_list = algo.forward_pass(0, samples)
-    #     obj_pred = np.mean(np.array(v_opt_list))
-    #
-    #     return obj_test, obj_pred, obj_nocut
     def get_fw_samples(self, feat, fw_n_samples):
         algo = self._get_algo(feat)
         return algo.sc_sampler.generate_samples(fw_n_samples)
 
-    def forward_obj_calculate(self, feat, samples, cuts=None):
+    def forward_obj_calculate(self, feat: np.ndarray, samples, cuts: np.ndarray):
         """obj计算"""
         algo = self._get_algo(feat)
         if cuts is not None:
@@ -98,7 +37,7 @@ class Infer:
         obj_list = algo.forward_pass(0, samples)
         return obj_list
 
-    def forward_obj_calculate_stage(self, feat, samples, cuts=None):
+    def forward_obj_calculate_stage(self, feat, samples, cuts: np.ndarray):
         """不同阶段的obj"""
         algo = self._get_algo(feat)
         if cuts is not None:
@@ -113,39 +52,14 @@ class Infer:
         obj_list = algo.forward_pass_stage(0, samples)
         return obj_list
 
-    def sddip(self, feat, cuts=None, return_cuts=False):
-        """
-        使用cuts计算sddip，直到收敛，cuts中可能是pred、pred_re、nocut
-        :param feat:
-        :param cuts:
-        :return:
-        """
-        infer_sddip_result_path = os.path.join(self.result_path, "sampled_sddip_result")
-        file_name = int(feat[0][0])
-        algo = self._get_algo(feat)
-        if cuts is not None:
-            # 添加cuts
-            for t in range(self.n_stages - 1):
-                for k in range(cuts.shape[1]):
-                    # i:一定要用0, k和t:对应piece和阶段
-                    algo.cuts_storage.add(0, k, t, cuts[t][k].tolist())
-            algo.cut_add_flag = True
-        # 返回运行时间以及收敛obj
-        if return_cuts:
-            sddip_time, obj, cuts_tensor = algo.run_time(file_name, infer_sddip_result_path, return_cuts)
-            return sddip_time, obj, cuts_tensor
-        else:
-            sddip_time, obj = algo.run_time(file_name, infer_sddip_result_path, return_cuts)
-            return sddip_time, obj
 
-    def sddip_fw_n_samples(self, feat, cuts, fw_n_samples):
+    def sddip_fw_n_samples(self, feat, cuts, fw_n_samples, max_iterations, logger):
         """
-        使用cuts计算sddip，直到收敛，cuts中可能是pred、pred_re、nocut，多次前向计算平均obj
-        :param feat:
-        :param cuts:
-        :return:
+        计算sddip，可提供初始化的cuts
+        返回每次迭代的time、obj、LB
+        obj根据参数fw_n_samples进行多次计算
+
         """
-        file_name = int(feat[0][0])
         algo = self._get_algo(feat)
         if cuts is not None:
             # 添加cuts
@@ -155,7 +69,7 @@ class Infer:
                     algo.cuts_storage.add(0, k, t, cuts[t][k].tolist())
             algo.cut_add_flag = True
         # 返回运行时间以及收敛obj
-        time_list, obj_list, LB_list = algo.run_sddip_fw_n_samples(fw_n_samples)
+        time_list, obj_list, LB_list = algo.run_sddip_fw_n_samples(fw_n_samples, max_iterations, logger)
         return time_list, obj_list, LB_list
 
     def sddip_n_lag(self, feat, cuts, max_lag, logger=None):
@@ -183,7 +97,7 @@ class Infer:
             [cuts_predicted[(t, k)] for k in range(n_pieces)]
             for t in range(self.n_stages - 1)
         ]
-        cuts_predicted_re = torch.tensor(cuts_predicted_re).float()
+        cuts_predicted_re = np.asarray(cuts_predicted_re, dtype=float)
         recalculate_time = time.time() - start
         return recalculate_time, cuts_predicted_re
 

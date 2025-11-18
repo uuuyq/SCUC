@@ -102,9 +102,7 @@ class Algorithm:
             obj_list.append(obj_mean)
             LB_list.append(v_lower)
             UB_list.append(v_upper_l)
-            if len(LB_list) >= stop_stabilization_count + 1 and \
-                    (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (
-                    abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance * 100:
+            if self.check_convergence(LB_list, stop_stabilization_count, factor=100):
                 break
             i += 1
             sb_count += 1
@@ -115,9 +113,7 @@ class Algorithm:
             obj_list.append(obj_mean)
             LB_list.append(v_lower)
             UB_list.append(v_upper_l)
-            if len(LB_list) >= stop_stabilization_count + 1 and \
-                    (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (
-                    abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance:
+            if self.check_convergence(LB_list, stop_stabilization_count, factor=1):
                 break
             i += 1
         run_time = time.time() - start_time
@@ -160,30 +156,49 @@ class Algorithm:
         np.savetxt(os.path.join(self.train_data_path, "LB_obj_list", f"{file_name}_LB.txt"), LB_list)
         np.savetxt(os.path.join(self.train_data_path, "LB_obj_list", f"{file_name}_obj.txt"), obj_list)
 
-
-    def get_all_cuts_tensor(self, n_iterations):
+    def check_convergence(self, LB_list, stop_stabilization_count, factor):
         """
-        收集所有的cuts，整理为tensor shape[t, n, d] n是将k和i合在一起
+        根据LB的变化检查是否收敛
+        :param LB_list: 迭代的下界list
+        :param stop_stabilization_count: stop_stabilization_count
+        :param factor: 在相对误差上乘以factor，用于放松判断收敛的条件
+        :return: boolean
+        """
+        if len(LB_list) >= stop_stabilization_count + 1 and \
+                (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (
+                abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance * factor:
+            return True
+        return False
+
+    def get_all_cuts_array(self, n_iterations):
+        """
+        收集所有的cuts，整理为array shape[t, n, d] n是将k和i合在一起
         :param n_iterations: 迭代次数，用i作为输入就行
-        :return:
+        :return: cuts_array 三维数组
         """
-        import torch
-        from torch.nn.utils.rnn import pad_sequence
-
+        # 1. 按 t 收集所有 cuts
         cuts_t_list = []
+        max_len = 0
+        cut_dim = None
+
         for t in range(self.n_stages - 1):
-            cuts_t = self.cuts_storage.get_values_by_t(t)
+            cuts_t = np.asarray(self.cuts_storage.get_values_by_t(t), dtype=float)
+
+            if cut_dim is None:
+                cut_dim = cuts_t.shape[1] if cuts_t.ndim > 1 else 1
+
             cuts_t_list.append(cuts_t)
+            max_len = max(max_len, cuts_t.shape[0])
 
-        # 先将每个 cuts_t 变为 tensor
-        cuts_tensor_list = []
-        for cuts_t in cuts_t_list:
-            cuts_tensor = torch.tensor(cuts_t, dtype=torch.float)
-            cuts_tensor_list.append(cuts_tensor)
+        # 2. 构造最终 padded 数组
+        cuts_array = np.zeros((self.n_stages - 1, max_len, cut_dim), dtype=float)
 
-        # pad 到相同数量的 cuts（在 dim=0），长度不足的 pad 0
-        cuts_padded = pad_sequence(cuts_tensor_list, batch_first=True)  # shape: (n_stage-1, max_num_cuts, cut_dim)
-        return cuts_padded
+        # 3. 写入每个 t 的数据
+        for t, arr in enumerate(cuts_t_list):
+            length = arr.shape[0]
+            cuts_array[t, :length, :] = arr
+
+        return cuts_array
 
     def run_n_lag(self, max_lag, logger=None):
         if logger is not None:
@@ -205,19 +220,21 @@ class Algorithm:
 
             lag_obj_list.append(obj_mean)
             lag_time_list.append(time.time() - start_time)
-            cuts_tensor = self.get_all_cuts_tensor(n_iterations=i + 1)
-            lag_cuts_list.append(cuts_tensor)
+            cuts_array = self.get_all_cuts_array(n_iterations=i + 1)
+            lag_cuts_list.append(cuts_array)
 
         self.logger.info("#### SDDiP-Algorithm finished ####")
 
         return lag_time_list, lag_obj_list, lag_cuts_list
 
-    def run_sddip_fw_n_samples(self, fw_n_samples):
-        '''
-        执行sddip，记录时间和obj，LB也记录下吧，注意前向需要多次
-        :return: obj_list, time_list
-        '''
-        print("#### SDDiP-Algorithm started ####")
+    def run_sddip_fw_n_samples(self, fw_n_samples, max_iterations, logger=None):
+        """
+        执行sddip，记录时间和obj，LB也记录下吧，注意计算obj时前向需要多次
+        :return: obj_list, time_list，LB_list
+        """
+        if logger is not None:
+            self.logger = logger
+        self.logger.info("#### SDDiP-Algorithm started ####")
         self.n_samples = self.n_samples_primary
         stop_stabilization_count = 3
 
@@ -234,45 +251,17 @@ class Algorithm:
         LB_list.append(v_lower)
 
         i = 0  # 全局迭代计数器
-        # SB阶段，最多执行20次
-        # sb_count = 0
-        # while sb_count < 10:
-        #     start_time = time.time()
-        #     self.SB_iteration(i)
-        #     end_time = time.time()
-        #     time_cost += end_time - start_time
-        #
-        #     print(f"SB iteration {i}")
-        #     print(f"time_list: {time_list}")
-        #     print(f"obj_list: {obj_list}")
-        #     print(f"LB_list: {LB_list}")
-        #
-        #     # 统计obj
-        #     obj_mean, v_upper_l, v_upper_r = self.run_statistical(fw_n_samples)
-        #     time_list.append(time_cost)
-        #     obj_list.append(obj_mean)
-        #     v_lower = self.lower_bound(0)
-        #     LB_list.append(v_lower)
-        #
-        #
-        #     if len(LB_list) >= stop_stabilization_count + 1 and \
-        #             (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (
-        #             abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance:
-        #         break
-        #     i += 1
-        #     sb_count += 1
-
         # 总共执行40次
-        while i < 40:
+        while i < max_iterations:
             start_time = time.time()
             self.SB_lag_iteration(LB_list, i)
             end_time = time.time()
             time_cost += end_time - start_time
 
-            print(f"SB-1 or lag-2 choose:{self.current_cut_mode}  iteration:{i} ")
-            print(f"time_list: {time_list}")
-            print(f"obj_list: {obj_list}")
-            print(f"LB_list: {LB_list}")
+            self.logger.info(f"SB-1 or lag-2 choose:{self.current_cut_mode}  iteration:{i} ")
+            self.logger.info(f"time_list: {time_list}")
+            self.logger.info(f"obj_list: {obj_list}")
+            self.logger.info(f"LB_list: {LB_list}")
 
 
             # 统计obj
@@ -286,7 +275,7 @@ class Algorithm:
                     (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance:
                 break
             i += 1
-        print("#### SDDiP-Algorithm finished ####")
+        self.logger.info("#### SDDiP-Algorithm finished ####")
 
         return time_list, obj_list, LB_list
 
@@ -305,28 +294,6 @@ class Algorithm:
 
         start_time = time.time()
         i = 0  # 全局迭代计数器
-
-        # SB阶段，最多执行20次
-
-        sb_count = 0
-        # while sb_count < 20:
-        #     start_time = time.time()
-        #     obj_mean, v_upper_l, v_upper_r = self.run_statistical(n_samples_statistical)
-        #     self.logger.info(f"SB iteration {i} Forward statistical time: {time.time() - start_time}")
-        #
-        #     start_time = time.time()
-        #     self.SB_iteration(i)
-        #     self.logger.info(f"SB iteration {i} time: {time.time() - start_time}")
-        #     v_lower = self.lower_bound(0)
-        #     LB_list.append(v_lower)
-        #     result.append((obj_mean, v_lower, v_upper_l, v_upper_r))
-        #     if len(LB_list) >= stop_stabilization_count + 1 and \
-        #             (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (
-        #             abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance:
-        #         break
-        #     i += 1
-        #     sb_count += 1
-
         # 总共执行50次
         lag_count = 0
         while i < 50:
@@ -370,23 +337,64 @@ class Algorithm:
 
     # TODO: SB和lag混合迭代方式
 
+    # def SB_lag_iteration(self, LB_list, index):
+    #     # 根据LB_list的情况，选择SB或lag迭代
+    #     no_improvement_condition = False
+    #     if len(LB_list) > 1:
+    #         no_improvement_condition = (LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8) <= self.relative_tolerance * 100
+    #         # print(f"RE: {(LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8)}  <= {self.relative_tolerance * 100}")
+    #     if self.current_cut_mode == self.secondary_cut_mode:
+    #         self.current_cut_mode = self.primary_cut_mode
+    #     elif no_improvement_condition:
+    #         self.current_cut_mode = self.secondary_cut_mode
+    #
+    #     if self.current_cut_mode == self.primary_cut_mode:
+    #         return self.SB_iteration(index)
+    #     elif self.current_cut_mode == self.secondary_cut_mode:
+    #         return self.lag_iteration(index)
+    #     else:
+    #         raise ValueError("self.current_cut_mode出错")
+
     def SB_lag_iteration(self, LB_list, index):
-        # 根据LB_list的情况，选择SB或lag迭代
+        # 初始化计数器（只在第一次调用时）
+        if not hasattr(self, "primary_no_improve_count"):
+            self.primary_no_improve_count = 0
+
+        # 检查 LB 是否改善
         no_improvement_condition = False
         if len(LB_list) > 1:
-            no_improvement_condition = (LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8) <= self.relative_tolerance * 100
-            # print(f"RE: {(LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8)}  <= {self.relative_tolerance * 100}")
-        if self.current_cut_mode == self.secondary_cut_mode:
-            self.current_cut_mode = self.primary_cut_mode
-        elif no_improvement_condition:
-            self.current_cut_mode = self.secondary_cut_mode
+            delta = (LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8)
+            no_improvement_condition = delta <= self.relative_tolerance
 
+        # -------- 新增逻辑：primary模式下出现无改善，计数次数 --------
+        if self.current_cut_mode == self.primary_cut_mode:
+            if no_improvement_condition:
+                self.primary_no_improve_count += 1
+            else:
+                self.primary_no_improve_count = 0
+
+        # 设定一个阈值，例如连续 5 次无改善就放弃 primary
+        if not hasattr(self, "primary_no_improve_limit"):
+            self.primary_no_improve_limit = 2
+
+        # 达到限制 → 永久切换到 secondary
+        if self.primary_no_improve_count >= self.primary_no_improve_limit:
+            self.logger.info("##########切换至lag模式#########")
+            self.current_cut_mode = self.secondary_cut_mode
+        else:
+            # 原始逻辑：尽量使用 primary，无改善时切 secondary
+            if self.current_cut_mode == self.secondary_cut_mode:
+                self.current_cut_mode = self.primary_cut_mode
+            elif no_improvement_condition:
+                self.current_cut_mode = self.secondary_cut_mode
+
+        # ---------------- 实际调用 ----------------
         if self.current_cut_mode == self.primary_cut_mode:
             return self.SB_iteration(index)
         elif self.current_cut_mode == self.secondary_cut_mode:
             return self.lag_iteration(index)
         else:
-            raise ValueError("self.current_cut_mode出错")
+            raise ValueError("self.current_cut_mode 出错")
 
 
 
@@ -1731,18 +1739,16 @@ class Algorithm:
                 stage_result.extend(soc_kt)
                 # stage_result.extend([theta_value])
                 result.add(0, k, t, stage_result)
-        # 将收集的x整理成x_tensor  [0~T-1]
+        # 将收集的x整理成x_array [0~T-1]
         x_list = []
         for t in range(self.problem_params.n_stages - 1):
             x_k_list = []
             for k in range(n_samples):
                 x_k_list.append(result.get_values(0, k, t))
             x_list.append(x_k_list)
-        np_array = np.array(x_list, dtype=np.float32)
-        # 转换为 tensor
-        x_tensor = torch.from_numpy(np_array)
+        x_array = np.array(x_list, dtype=np.float32)
 
-        return x_tensor
+        return x_array
 
     '''IFR算法'''
     # 测试结果，只有第一个阶段中的数值有一些差距，考虑精度问题，但不知道是哪里的精度问题导致？

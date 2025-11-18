@@ -63,3 +63,4 @@ class Config:
         self.result_path = result_path
         self.additional_data = additional_data
         self.standard_flag = standard_flag
+        self.compare_path = None
