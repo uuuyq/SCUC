@@ -3,12 +3,12 @@ from statistics import mean
 import gurobipy as gp
 import numpy as np
 from scipy import stats
-
-from . import scenarios, ucmodelclassical, parameters, outermodel, dualsolver
-from .result_storage import result_Dict
 import os
 import matplotlib.pyplot as plt
 import pickle as pkl
+
+from sddip_script_update import scenarios, ucmodelclassical, parameters, outermodel, dualsolver
+from sddip_script_update.result_storage import result_Dict
 
 
 

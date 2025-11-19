@@ -1,9 +1,8 @@
 import random as rdm
-
 import numpy as np
 import pandas as pd
 
-from . import config
+from sddip_script_update import config
 
 
 class ScenarioGenerator:

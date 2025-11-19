@@ -1,11 +1,9 @@
 import logging
 import os
-
-import numpy
 import numpy as np
-import torch
-from sddip_script_update import sddipclassical
 import time
+
+from sddip_script_update import sddipclassical
 
 
 

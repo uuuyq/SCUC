@@ -2,13 +2,10 @@ import ast
 import os.path
 import pickle
 from statistics import mean
-
 import torch
 from matplotlib import pyplot as plt
-
+from IFR.infer import Infer
 from NN_torch_24.config import Config
-from infer import Infer
-
 def fw_calculate(train_data_path, add_cuts_flag=True):
     n_realizations = 6
     num_stage = 24

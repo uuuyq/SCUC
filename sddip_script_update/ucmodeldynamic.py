@@ -1,5 +1,4 @@
 from abc import ABC, abstractmethod
-
 import gurobipy as gp
 import numpy as np
 from scipy import linalg

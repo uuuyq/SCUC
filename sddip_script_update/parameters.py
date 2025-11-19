@@ -1,10 +1,9 @@
 import logging
 import os
-
 import numpy as np
 import pandas as pd
 
-from sddip_script import utils
+from sddip_script_update import utils
 
 logger = logging.getLogger(__name__)
 

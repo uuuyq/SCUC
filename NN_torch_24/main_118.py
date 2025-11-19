@@ -7,7 +7,7 @@ import numpy
 import pandas as pd
 from time import time
 import torch
-from config import Config
+from NN_torch_24.config import Config
 
 
 def model_gamma_choice(trainer):

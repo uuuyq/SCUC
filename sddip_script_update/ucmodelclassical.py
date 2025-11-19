@@ -1,5 +1,4 @@
 import logging
-
 import gurobipy as gp
 
 from .ucmodeldynamic import BackwardModelBuilder

@@ -1,17 +1,17 @@
 import torch
 from torch.utils.data import DataLoader, random_split
-from config import Config
-from dataset import CutDataset, CutDatasetNormalized
-from model import NN_Model
 import matplotlib.pyplot as plt
 import os
-from infer import Infer
+import time
 from torch.utils.data import Subset
 import multiprocessing as mp
 from functools import partial
 from tqdm import tqdm
-from constant import CompareConstant
-import time
+from NN_torch_24.config import Config
+from NN_torch_24.dataset import CutDataset, CutDatasetNormalized
+from NN_torch_24.model import NN_Model
+from NN_torch_24.infer import Infer
+from NN_torch_24.constant import CompareConstant
 
 class TrainerFixed:
     """
@@ -518,7 +518,7 @@ class TrainerFixed:
                        fw_n_samples=fw_n_samples,
                        max_lag=max_lag,
                        config=self.config,
-                       re_time_limit=60 * 70,
+                       re_time_limit=60 * 120,
                        log_path=self.config.compare_path)
 
         compare_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
@@ -556,7 +556,7 @@ class TrainerFixed:
                        fw_n_samples=fw_n_samples,
                        max_lag=max_lag,
                        config=self.config,
-                       re_time_limit=60 * 70,
+                       re_time_limit=60 * 90,
                        log_path=self.config.compare_path)
 
         compare_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
@@ -685,6 +685,7 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
     # 舍弃超时或出错的instance
     if status == 'timeout':
         logger.warning("Recalculate 超时，直接返回默认值")
+        print("re 超时返回！！！！")
         return None
     elif status == 'error':
         logger.error("Recalculate 执行失败")
