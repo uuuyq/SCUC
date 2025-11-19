@@ -56,7 +56,6 @@ class Infer:
         计算sddip，可提供初始化的cuts
         返回每次迭代的time、obj、LB
         obj根据参数fw_n_samples进行多次计算
-
         """
         algo = self._get_algo(feat)
         if cuts is not None:

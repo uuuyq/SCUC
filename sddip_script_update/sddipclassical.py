@@ -6,6 +6,7 @@ from scipy import stats
 import os
 import matplotlib.pyplot as plt
 import pickle as pkl
+import multiprocessing
 
 from sddip_script_update import scenarios, ucmodelclassical, parameters, outermodel, dualsolver
 from sddip_script_update.result_storage import result_Dict
@@ -234,7 +235,7 @@ class Algorithm:
         """
         if logger is not None:
             self.logger = logger
-        self.logger.info("#### SDDiP-Algorithm started ####")
+        self.logger.info("#### run_sddip_fw_n_samples started ####")
         self.n_samples = self.n_samples_primary
         stop_stabilization_count = 3
 
@@ -244,6 +245,7 @@ class Algorithm:
 
         time_cost = 0
         # 初始记录
+        self.logger.info(f"init | run_statistical fw_n_samples: {fw_n_samples}")
         obj_mean, v_upper_l, v_upper_r = self.run_statistical(fw_n_samples)
         time_list.append(time_cost)
         obj_list.append(obj_mean)
@@ -265,6 +267,7 @@ class Algorithm:
 
 
             # 统计obj
+            self.logger.info(f"iter: {i} | run_statistical fw_n_samples: {fw_n_samples}")
             obj_mean, v_upper_l, v_upper_r = self.run_statistical(fw_n_samples)
             time_list.append(time_cost)
             obj_list.append(obj_mean)
@@ -327,33 +330,15 @@ class Algorithm:
 
 
     def run_statistical(self, n_samples_statistical):
+        # if n_samples_statistical > 50:
+        #     v_opt_k = self.forward_pass_statistical_multiprocess(0, n_samples_statistical, n_cpus)
+        # else:
         v_opt_k = self.forward_pass_statistical(0, n_samples_statistical)
         v_upper_l, v_upper_r = self.statistical_upper_bound(
             v_opt_k, n_samples_statistical
         )
 
         return mean(v_opt_k), v_upper_l, v_upper_r
-
-
-    # TODO: SB和lag混合迭代方式
-
-    # def SB_lag_iteration(self, LB_list, index):
-    #     # 根据LB_list的情况，选择SB或lag迭代
-    #     no_improvement_condition = False
-    #     if len(LB_list) > 1:
-    #         no_improvement_condition = (LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8) <= self.relative_tolerance * 100
-    #         # print(f"RE: {(LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8)}  <= {self.relative_tolerance * 100}")
-    #     if self.current_cut_mode == self.secondary_cut_mode:
-    #         self.current_cut_mode = self.primary_cut_mode
-    #     elif no_improvement_condition:
-    #         self.current_cut_mode = self.secondary_cut_mode
-    #
-    #     if self.current_cut_mode == self.primary_cut_mode:
-    #         return self.SB_iteration(index)
-    #     elif self.current_cut_mode == self.secondary_cut_mode:
-    #         return self.lag_iteration(index)
-    #     else:
-    #         raise ValueError("self.current_cut_mode出错")
 
     def SB_lag_iteration(self, LB_list, index):
         # 初始化计数器（只在第一次调用时）
@@ -375,7 +360,7 @@ class Algorithm:
 
         # 设定一个阈值，例如连续 5 次无改善就放弃 primary
         if not hasattr(self, "primary_no_improve_limit"):
-            self.primary_no_improve_limit = 2
+            self.primary_no_improve_limit = 3
 
         # 达到限制 → 永久切换到 secondary
         if self.primary_no_improve_count >= self.primary_no_improve_limit:
@@ -650,6 +635,93 @@ class Algorithm:
 
         return obj_stage
 
+    
+
+    # def forward_pass_statistical_multiprocess(self, iteration: int, n_samples: int, n_cpus: int) -> list:
+    #     i = iteration  # 从0开始
+    #     samples = self.sc_sampler.generate_samples(n_samples)
+    #     v_opt_k = []
+    #
+    #     def process_sample(k):
+    #         self.logger.info(f"fw {k} start...")
+    #         # t = -1对应的状态值
+    #         x_trial_point = self.problem_params.init_x_trial_point
+    #         y_trial_point = self.problem_params.init_y_trial_point
+    #         x_bs_trial_point = self.problem_params.init_x_bs_trial_point
+    #         soc_trial_point = self.problem_params.init_soc_trial_point
+    #
+    #         v_opt_k_local = 0
+    #         for t, n in zip(range(self.problem_params.n_stages), samples[k]):
+    #             # Create forward model
+    #             uc_fw = ucmodelclassical.ClassicalModel(
+    #                 self.problem_params.n_buses,
+    #                 self.problem_params.n_lines,
+    #                 self.problem_params.n_gens,
+    #                 self.problem_params.n_storages,
+    #                 self.problem_params.gens_at_bus,
+    #                 self.problem_params.storages_at_bus,
+    #                 self.problem_params.backsight_periods,
+    #                 lp_relax=False
+    #             )
+    #
+    #             uc_fw: ucmodelclassical.ClassicalModel = (
+    #                 self.add_problem_constraints(uc_fw, t, n)
+    #             )
+    #             uc_fw.add_objective(self.problem_params.cost_coeffs)
+    #
+    #             # 计算z与trial_point的差值relaxed_terms，前向过程需要relaxed_terms=0
+    #             uc_fw.calculate_relaxed_terms(
+    #                 x_trial_point,
+    #                 y_trial_point,
+    #                 x_bs_trial_point,
+    #                 soc_trial_point,
+    #             )
+    #             uc_fw.zero_relaxed_terms()
+    #
+    #             # Solve problem
+    #             uc_fw.disable_output()
+    #             uc_fw.model.optimize()
+    #             if uc_fw.model.status != 2:
+    #                 self.logger.info(f"model.status {uc_fw.model.status}")
+    #
+    #             try:
+    #                 # 获取结果
+    #                 x_kt = [x_g.x for x_g in uc_fw.x]
+    #                 y_kt = [y_g.x for y_g in uc_fw.y]
+    #                 x_bs_kt = [
+    #                     [x_bs.x for x_bs in x_bs_g] for x_bs_g in uc_fw.x_bs
+    #                 ]
+    #                 soc_kt = [soc_s.x for soc_s in uc_fw.soc]
+    #             except AttributeError:
+    #                 print("uc_fw.model 求解错误")
+    #                 uc_fw.model.write("model.lp")
+    #                 uc_fw.model.computeIIS()
+    #                 uc_fw.model.write("model.ilp")
+    #                 raise
+    #
+    #             v_value_function = uc_fw.model.getObjective().getValue()
+    #             v_opt_kt = v_value_function - uc_fw.theta.x
+    #             v_opt_k_local += v_opt_kt
+    #             theta_value = uc_fw.theta.x
+    #
+    #             x_trial_point = x_kt
+    #             y_trial_point = y_kt
+    #             if any(x_bs_kt):
+    #                 x_bs_trial_point = [
+    #                     [x_trial_point[g]] + x_bs_kt[g][:-1]
+    #                     for g in range(self.problem_params.n_gens)
+    #                 ]
+    #             soc_trial_point = soc_kt
+    #
+    #         return v_opt_k_local
+    #
+    #     # 使用多进程池来并行执行每个采样路径的计算
+    #     with multiprocessing.Pool(processes=n_cpus) as pool:
+    #         v_opt_k = pool.map(process_sample, range(n_samples))
+    #
+    #     return v_opt_k
+
+
 
     # 多个采样路径评估上界，不保存trial_points
     def forward_pass_statistical(self, iteration: int, n_samples: int) -> list:
@@ -658,6 +730,7 @@ class Algorithm:
         v_opt_k = []
 
         for k in range(n_samples):
+            self.logger.info(f"fw {k} start...")
             # t = -1对应的状态值
             x_trial_point = self.problem_params.init_x_trial_point
             y_trial_point = self.problem_params.init_y_trial_point

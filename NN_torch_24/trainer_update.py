@@ -14,7 +14,7 @@ from NN_torch_24.infer import Infer
 from NN_torch_24.constant import CompareConstant
 import logging
 
-class TrainerFixed:
+class TrainerUpdate:
     """
     输入： x + 分布参数 / scenarios
     输出：cuts
@@ -430,7 +430,7 @@ class TrainerFixed:
         num_instances = len(data_sampled)
 
         save_path = os.path.join(self.config.compare_path,
-                                 f"num-{num_instances}_data_sampled_pred.pkl")
+                                 f"num-{num_instances}_data_sampled_sddip_pred.pkl")
         if os.path.exists(save_path):
             print(f"{save_path} 已存在，直接返回")
             with open(save_path, "rb") as f:
@@ -439,7 +439,7 @@ class TrainerFixed:
 
 
         model = self._load_model()
-        print(f" predict start...  device: {self.device}")
+        print(f" predict start  device: {self.device}")
         for i in tqdm(range(num_instances), desc="pred cuts processing"):
             sample = data_sampled[i]
 
@@ -461,73 +461,84 @@ class TrainerFixed:
         return data_sampled
 
 
-
-    def compare_complete(self, num_instances, fw_n_samples, max_iterations, max_lag, sddip_timeout_sec, compare_timeout_sec, num_threads):
-        """
-        使用多进程方式比较时间和obj。
-        注意：如果CPU紧张，pred或re的耗时可能会略有上升。
-        流程：
-        1. sample
-
-        2. pred
-
-        3. sddip
-        这里保存一下 sddip数据比较重要
-
-        下面开始多进程：
-        4. re
-        此时可能会因re超时删除部分
-        5. obj
-        6. pred_sddip + obj
-
-
-
-        """
+    def sampled_sddip(self, num_instances, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads):
         # 创建保存结果的文件夹
         if self.config.compare_path is None:
             raise Exception("compare_path is None 需要设置compare_path为测试结果保存的位置")
-
         os.makedirs(self.config.compare_path, exist_ok=True)
+
+        save_path = os.path.join(self.config.compare_path, f"num-{num_instances}_data_sampled_sddip_fw-{sddip_fw_n_samples}_iter-{max_iterations}.pkl")
+        if os.path.exists(save_path):
+            print(f"{save_path} 已存在，直接返回")
+            with open(save_path, "rb") as f:
+                data_sampled = torch.load(f)
+            return data_sampled
 
         # 内部判断是否已经存在
         data_sampled = self.sample_test_dataset(num_instances)
-        data_sampled = self._get_pred_cuts(data_sampled)
-
 
         num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
         # sddip
         print(f"sddip: using {num_workers} processes for parallel...")
         func = partial(_process_sddip,
-                       fw_n_samples=fw_n_samples,
+                       sddip_fw_n_samples=sddip_fw_n_samples,
                        config=self.config,
                        max_iterations=max_iterations,
                        log_path=self.config.compare_path
-        )
+                       )
         data_sampled = multi_process(func, num_workers, data_sampled, sddip_timeout_sec)
         print("Parallel sddip complete.")
         # 保存原始结果
-        torch.save(data_sampled, os.path.join(self.config.compare_path,
-                                        f"num-{num_instances}_data_sampled_pred_sddip-fw-{fw_n_samples}.pkl"))
+        torch.save(data_sampled, save_path)
 
-        # print("输出查看data_sampled：")
-        # print(data_sampled)
+    def compare_obj_multiprocess(self, data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads):
+        """
+        使用多进程方式比较时间和obj。
+        注意：如果CPU紧张，pred或re的耗时可能会略有上升。
+        pred
+        开始多进程的方式
+        re
+        obj
+        """
+        data_sampled = self._get_pred_cuts(data_sampled_sddip)
+        print("#########pred finish#########")
 
-
+        num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
 
         print(f"compare: using {num_workers} processes for parallel...")
-        func = partial(_process_instance_complete,
-                       fw_n_samples=fw_n_samples,
+        func = partial(_process_obj,
+                       obj_fw_n_samples=obj_fw_n_samples,
                        max_lag=max_lag,
                        config=self.config,
                        log_path=self.config.compare_path)
 
-        compare_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
+        compare_obj_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
 
         # 保存原始结果
-        torch.save(compare_result, os.path.join(self.config.compare_path,
-                                        f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
+        torch.save(compare_obj_result, os.path.join(self.config.compare_path,
+                                        f"num-{len(data_sampled_sddip)}_compare_obj_result_fw-{obj_fw_n_samples}_max_lag-{max_lag}.pkl"))
         print("Parallel comparison complete.")
-        return compare_result
+        return compare_obj_result
+
+    def compare_LB_multiprocess(self, data_sampled_sddip, num_instances, sddip_fw_n_samples, max_iterations, compare_timeout_sec, num_threads):
+        """
+        比较LB
+        """
+        num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
+        data_sampled_sddip = data_sampled_sddip[:num_instances]
+        print(f"compare: using {num_workers} processes for parallel...")
+        func = partial(_process_LB,
+                       sddip_fw_n_samples=sddip_fw_n_samples,
+                       max_iterations=max_iterations,
+                       config=self.config,
+                       log_path=self.config.compare_path)
+
+        compare_LB_result = multi_process(func, num_workers, data_sampled_sddip, compare_timeout_sec)
+        # 保存原始结果
+        torch.save(compare_LB_result, os.path.join(self.config.compare_path,
+                                                    f"num-{len(data_sampled_sddip)}_compare_LB_result_fw-{sddip_fw_n_samples}_max_iter-{max_iterations}.pkl"))
+        print("Parallel comparison complete.")
+        return compare_LB_result
 
     def compare_quick(self, num_instances, fw_n_samples, max_lag,
                          compare_timeout_sec, num_threads):
@@ -588,7 +599,9 @@ def multi_process(func, num_workers, data_sampled, timeout_sec=None):
                 print(f"❌ Instance {i} failed with error: {e}")
     return result
 
-def _process_sddip(instance_index, instance_dict, fw_n_samples, config, max_iterations, log_path):
+
+
+def _process_sddip(instance_index, instance_dict, sddip_fw_n_samples, config, max_iterations, log_path):
     # === 每个进程单独日志 ===
     log_dir = os.path.join(log_path, "sddip_logs")  # 日志保存位置
     os.makedirs(log_dir, exist_ok=True)
@@ -617,11 +630,12 @@ def _process_sddip(instance_index, instance_dict, fw_n_samples, config, max_iter
     )
 
     feat = instance_dict[CompareConstant.feat]
+    logger.info(f"feat: {feat}")
     time_list, obj_list, LB_list = calculate_obj_with_sddip_iteration(
         inference_sddip=inference_sddip,
         feat=feat,
         cuts=None,
-        fw_n_samples=fw_n_samples,
+        fw_n_samples=sddip_fw_n_samples,
         additional_time=0,  # sddip没有额外的时间
         max_iterations=max_iterations,
         logger=logger,
@@ -635,11 +649,15 @@ def _process_sddip(instance_index, instance_dict, fw_n_samples, config, max_iter
 
 
 
-def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_lag, config, log_path):
-    """单个样本的处理逻辑，供多进程调用"""
+def _process_obj(instance_index, instance_dict, obj_fw_n_samples, max_lag, config, log_path):
+    """
+    单个样本的处理逻辑
+    计算这几种的obj
+    nocut pred pred_re pred_sddip pred_re_sddip sddip收敛
+    """
 
     # === 每个进程单独日志 ===
-    log_dir = os.path.join(log_path, "compare_logs")
+    log_dir = os.path.join(log_path, "compare_obj_logs")
     os.makedirs(log_dir, exist_ok=True)
     log_file = os.path.join(log_dir, f"process_{instance_index}.log")
     # 清空旧日志处理器
@@ -666,13 +684,12 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
     )
 
     feat = instance_dict[CompareConstant.feat]
+    logger.info(f"feat: {feat}")
     cuts_pred = instance_dict[CompareConstant.cuts_pred]
     x_pred = instance_dict[CompareConstant.x_pred]
     logger.info(f"cuts_pred.shape: {cuts_pred.shape}")
-    logger.info(cuts_pred)
 
-    """不知道什么原因，recalculate在有些样本中耗时很长，控制运行时长，超时直接舍弃该样本返回"""
-    logger.info("Start recalculate cuts...")
+    logger.info("############Start recalculate cuts################")
     logger.info("re需要的参数：")
     logger.info(f"feat.device: {feat.device}")
     logger.info(f"cuts_pred.device: {cuts_pred.device}")
@@ -680,70 +697,114 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
     # 直接在dual model求解中限制求解时间和精度
     cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, x_pred, inference_sddip, logger)
 
-    # status, result = run_with_timeout(
-    #     _recalculate_cuts,
-    #     args=(feat, cuts_pred, x_array, inference_sddip, logger),
-    #     timeout=re_time_limit,
-    #     logger=logger
-    # )
-    # # 舍弃超时或出错的instance
-    # if status == 'timeout':
-    #     logger.warning("Recalculate 超时，直接返回默认值")
-    #     print("re 超时返回！！！！")
-    #     return None
-    # elif status == 'error':
-    #     logger.error("Recalculate 执行失败")
-    #     return None
-    # else:  # 正常完成
-    #     cuts_pred_re, recalculate_time = result
     # re结果保存
-    logger.info("re正常完成，保存到dict中...")
+    logger.info("###########re正常完成，保存到dict中##############")
     instance_dict[CompareConstant.recalculate_time] = recalculate_time
     instance_dict[CompareConstant.time_pred_re] = instance_dict[CompareConstant.time_pred] + recalculate_time
     instance_dict[CompareConstant.cuts_pred_re] = cuts_pred_re
 
 
-    logger.info("Start calculate obj with (no_cuts, cuts_pred, cuts_pred_re)")
-    
+    logger.info("############Start calculate obj################")
+
+    cuts_sddip = instance_dict[CompareConstant.cuts_sddip]
+
+    # nocut pred pred_re 对应的obj
+    samples = inference_sddip.get_fw_samples(feat, obj_fw_n_samples)
     obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-        feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger
+        feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger
     )
+    # sddip收敛对应的obj
+    obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts_sddip)
+    logger.info("################calculate pred_re obj complete#################")
+
     # obj结果保存
-    logger.info("calculate obj完成，保存到dict中...")
     instance_dict[CompareConstant.obj_nocut] = obj_list_nocut
     instance_dict[CompareConstant.obj_pred] = obj_list_pred
     instance_dict[CompareConstant.obj_pred_re] = obj_list_pred_re
+    instance_dict[CompareConstant.obj_sddip] = obj_list_sddip
 
-    # 进一步执行sddip
-    # pred sddip
-    pred_time_list, pred_obj_list, pred_LB_list = calculate_obj_with_sddip_iteration(inference_sddip=inference_sddip,
-                                        feat=feat,
-                                        cuts=cuts_pred,
-                                        fw_n_samples=fw_n_samples,
-                                        additional_time=instance_dict[CompareConstant.time_pred],
-                                        max_iterations=max_lag,
-                                        logger=logger
-                                       )
 
-    instance_dict[CompareConstant.time_pred_sddip] = pred_time_list
-    instance_dict[CompareConstant.obj_pred_sddip] = pred_obj_list
-    instance_dict[CompareConstant.LB_pred_sddip] = pred_LB_list
+    if max_lag > 0:
+        logger.info("###############进一步执行sddip##################")
+        lag_time_list, lag_obj_list, lag_cuts_list, lag_time_list_re, lag_obj_list_re, lag_cuts_list_re = (
+            _pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger))
+        logger.info("###############sddip完成##################")
+        # 计算对应的obj
+        logger.info("###############pred_sddip和pred_re_sddip计算obj ##################")
+        for i in range(max_lag):
+            logger.info(f"Start calculate obj with additional_sddip_cuts: {i} / {max_lag}")
+            obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
+                feat, lag_cuts_list[i], lag_cuts_list_re[i], inference_sddip, samples, logger
+            )
+            instance_dict[CompareConstant.time_pred_sddip_list[i]] = (lag_time_list[i]
+                                                                      + instance_dict[CompareConstant.time_pred])
+            instance_dict[CompareConstant.time_pred_re_sddip_list[i]] = (lag_time_list_re[i]
+                                                                         + instance_dict[CompareConstant.time_pred_re])
+            instance_dict[CompareConstant.obj_pred_sddip_list[i]] = obj_list_pred
+            instance_dict[CompareConstant.obj_pred_re_sddip_list[i]] = obj_list_pred_re
 
-    # pred re sddip
-    pred_re_time_list, pred_re_obj_list, pred_re_LB_list = calculate_obj_with_sddip_iteration(inference_sddip=inference_sddip,
-                                    feat=feat,
-                                    cuts=cuts_pred_re,
-                                    fw_n_samples=fw_n_samples,
-                                    additional_time=instance_dict[CompareConstant.time_pred_re],
-                                    max_iterations=max_lag,
-                                    logger=logger
-                                    )
-    instance_dict[CompareConstant.time_pred_re_sddip] = pred_re_time_list
-    instance_dict[CompareConstant.obj_pred_re_sddip] = pred_re_obj_list
-    instance_dict[CompareConstant.LB_pred_re_sddip] = pred_re_LB_list
 
     logger.info(f"Process {instance_index} done.")
     return instance_dict
+
+def _process_LB(instance_index, instance_dict, sddip_fw_n_samples, max_iterations, config, log_path):
+    """
+        单个样本的处理逻辑
+        计算这几种的obj
+        nocut pred pred_re pred_sddip pred_re_sddip sddip收敛
+        """
+
+    # === 每个进程单独日志 ===
+    log_dir = os.path.join(log_path, "compare_LB_logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"process_{instance_index}.log")
+    # 清空旧日志处理器
+    for h in logging.root.handlers[:]:
+        logging.root.removeHandler(h)
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"[%(asctime)s][Process {instance_index}][%(levelname)s] %(message)s",
+        handlers=[
+            logging.FileHandler(log_file, mode='w', encoding='utf-8'),
+            # logging.StreamHandler()  # 若希望仍打印到控制台可加这一行
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info(f"Process {instance_index} start")
+
+    # === 正式计算 ===
+    inference_sddip = Infer(
+        n_stages=config.num_stage,
+        n_realizations=config.n_realizations,
+        N_VARS=config.n_vars,
+        train_data_path=config.train_data_path,
+        result_path=config.result_path
+    )
+
+    feat = instance_dict[CompareConstant.feat]
+
+    # pred
+    logger.info("##########pred sddip start##############")
+    cuts_pred = instance_dict[CompareConstant.cuts_pred]
+    time_pred = instance_dict[CompareConstant.time_pred]
+    time_pred_list, obj_pred_list, LB_pred_list = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred, sddip_fw_n_samples, time_pred, max_iterations,
+                                       logger)
+    logger.info("##########pred re sddip start##############")
+    cuts_pred_re = instance_dict[CompareConstant.cuts_pred_re]
+    time_pred_re = instance_dict[CompareConstant.time_pred_re]
+    time_pred_re, obj_pred_re_list, LB_pred_re_list = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred_re, sddip_fw_n_samples, time_pred_re, max_iterations,
+                                       logger)
+
+    instance_dict[CompareConstant.time_pred_sddip] = time_pred_list
+    instance_dict[CompareConstant.obj_pred_sddip] = obj_pred_list
+    instance_dict[CompareConstant.LB_pred_sddip] = LB_pred_list
+    instance_dict[CompareConstant.time_pred_re_sddip] = time_pred_re
+    instance_dict[CompareConstant.obj_pred_re_sddip] = obj_pred_re_list
+    instance_dict[CompareConstant.LB_pred_re_sddip] = LB_pred_re_list
+
+    return instance_dict
+
+
 
 
 def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag, config, log_path):
@@ -788,21 +849,6 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     logger.info(f"x_pred.device: {x_pred.device}")
     # 直接在dual model求解中限制求解时间和精度
     cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, x_pred, inference_sddip, logger)
-    # status, result = run_with_timeout(
-    #     _recalculate_cuts,
-    #     args=(),
-    #     timeout=re_time_limit,
-    #     logger=logger
-    # )
-    # # 舍弃超时或出错的instance
-    # if status == 'timeout':
-    #     logger.warning("Recalculate 超时，直接返回默认值")
-    #     return None
-    # elif status == 'error':
-    #     logger.error("Recalculate 执行失败")
-    #     return None
-    # else:  # 正常完成
-    #     cuts_pred_re, recalculate_time = result
 
     # re结果保存
     logger.info("re正常完成，保存到dict中...")
@@ -811,8 +857,9 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     instance_dict[CompareConstant.cuts_pred_re] = cuts_pred_re
 
     logger.info("Start calculate obj with (no_cuts, cuts_pred, cuts_pred_re)")
+    samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
     obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-        feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger
+        feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger
     )
     # obj结果保存
     logger.info("calculate obj完成，保存到dict中...")
@@ -823,12 +870,13 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     # 进一步执行sddip
     if max_lag > 0:
         lag_time_list, lag_obj_list, lag_cuts_list, lag_time_list_re, lag_obj_list_re, lag_cuts_list_re = (
-            pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger))
+            _pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger))
         # 计算对应的obj
         for i in range(max_lag):
             logger.info(f"Start calculate obj with additional_sddip_cuts: {i} max_lag: {max_lag}")
+            samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
             obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-                feat, lag_cuts_list[i], lag_cuts_list_re[i], inference_sddip, fw_n_samples, logger
+                feat, lag_cuts_list[i], lag_cuts_list_re[i], inference_sddip, samples, logger
             )
             instance_dict[CompareConstant.time_pred_sddip_list[i]] = (lag_time_list[i]
                                                                       + instance_dict[CompareConstant.time_pred])
@@ -848,55 +896,11 @@ def _recalculate_cuts(feat, cuts_pred, x_array, inference_sddip, logger):
     recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat, cuts_pred, x_array, logger)
     return cuts_predicted_re, recalculate_time
 
-# import logging
-# import threading
-# import queue
-
-# def run_with_timeout(func, args=(), kwargs=None, timeout=60, logger=None):
-#     """
-#     在独立线程中执行函数 func ，超时则返回 ('timeout', None)，
-#     正常结束返回 ('ok', func_result)，出错返回 ('error', exception)。
-#     """
-#     if kwargs is None:
-#         kwargs = {}
-#     q = queue.Queue()
-
-#     def wrapper():
-#         try:
-#             result = func(*args, **kwargs)
-#             q.put(('ok', result))
-#         except Exception as e:
-#             if logger:
-#                 logger.exception("Function execution failed.")
-#             q.put(('error', e))
-
-#     # 启动线程
-#     t = threading.Thread(target=wrapper, daemon=True)
-#     t.start()
-
-#     # 等待执行结果或超时
-#     t.join(timeout)
-
-#     if t.is_alive():
-#         if logger:
-#             logger.warning(f"⚠️ 超时 {timeout}s，线程未完成（返回 timeout）")
-#         return 'timeout', None
-
-#     # 正常结束时从队列取结果
-#     if not q.empty():
-#         return q.get()
-#     else:
-#         return 'error', None
-
-
-
-def _calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger):
+def _calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger):
     """
     针对一个instance，由于要使用相同的sample，只能将nocut、pred、pred_re放在一起
     只是计算不同cuts对应的obj
     """
-
-    samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
     # nocut
     obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
     logger.info("calculate nocut obj complete")
@@ -909,7 +913,7 @@ def _calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples,
     return obj_list_nocut, obj_list_pred, obj_list_pred_re
 
 
-def pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger):
+def _pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger):
     """
     使用预测的cuts进行n次sddip，记录增加后的所有cuts，也顺便把obj也记录了
         pred + 1 lag

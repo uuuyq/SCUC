@@ -1,7 +1,7 @@
 import math
 import os
 from pathlib import Path
-
+from NN_torch_24.trainer_update import TrainerUpdate
 from NN_torch_24.config import Config
 
 def compare(trainer, config):
@@ -61,9 +61,9 @@ if __name__ == '__main__':
         standard_flag=True,
     )
     # 模型训练后数据保存位置
-    from NN_torch_24.trainer_fixed import TrainerFixed
 
-    trainer = TrainerFixed(config)
+
+    trainer = TrainerUpdate(config)
     main(trainer, config)
 
 
