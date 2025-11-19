@@ -12,6 +12,7 @@ from NN_torch_24.dataset import CutDataset, CutDatasetNormalized
 from NN_torch_24.model import NN_Model
 from NN_torch_24.infer import Infer
 from NN_torch_24.constant import CompareConstant
+import logging
 
 class TrainerFixed:
     """
@@ -518,7 +519,6 @@ class TrainerFixed:
                        fw_n_samples=fw_n_samples,
                        max_lag=max_lag,
                        config=self.config,
-                       re_time_limit=60 * 120,
                        log_path=self.config.compare_path)
 
         compare_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
@@ -556,7 +556,6 @@ class TrainerFixed:
                        fw_n_samples=fw_n_samples,
                        max_lag=max_lag,
                        config=self.config,
-                       re_time_limit=60 * 90,
                        log_path=self.config.compare_path)
 
         compare_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
@@ -636,7 +635,7 @@ def _process_sddip(instance_index, instance_dict, fw_n_samples, config, max_iter
 
 
 
-def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_lag, config, re_time_limit, log_path):
+def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_lag, config, log_path):
     """单个样本的处理逻辑，供多进程调用"""
 
     # === 每个进程单独日志 ===
@@ -668,7 +667,7 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
 
     feat = instance_dict[CompareConstant.feat]
     cuts_pred = instance_dict[CompareConstant.cuts_pred]
-    x_array = instance_dict[CompareConstant.x_pred]
+    x_pred = instance_dict[CompareConstant.x_pred]
     logger.info(f"cuts_pred.shape: {cuts_pred.shape}")
     logger.info(cuts_pred)
 
@@ -677,23 +676,26 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
     logger.info("re需要的参数：")
     logger.info(f"feat.device: {feat.device}")
     logger.info(f"cuts_pred.device: {cuts_pred.device}")
-    status, result = run_with_timeout(
-        _recalculate_cuts,
-        args=(feat, cuts_pred, x_array, inference_sddip, logger),
-        timeout=re_time_limit,
-        logger=logger
-    )
-    # 舍弃超时或出错的instance
-    if status == 'timeout':
-        logger.warning("Recalculate 超时，直接返回默认值")
-        print("re 超时返回！！！！")
-        return None
-    elif status == 'error':
-        logger.error("Recalculate 执行失败")
-        return None
-    else:  # 正常完成
-        cuts_pred_re, recalculate_time = result
+    logger.info(f"x_pred.device: {x_pred.device}")
+    # 直接在dual model求解中限制求解时间和精度
+    cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, x_pred, inference_sddip, logger)
 
+    # status, result = run_with_timeout(
+    #     _recalculate_cuts,
+    #     args=(feat, cuts_pred, x_array, inference_sddip, logger),
+    #     timeout=re_time_limit,
+    #     logger=logger
+    # )
+    # # 舍弃超时或出错的instance
+    # if status == 'timeout':
+    #     logger.warning("Recalculate 超时，直接返回默认值")
+    #     print("re 超时返回！！！！")
+    #     return None
+    # elif status == 'error':
+    #     logger.error("Recalculate 执行失败")
+    #     return None
+    # else:  # 正常完成
+    #     cuts_pred_re, recalculate_time = result
     # re结果保存
     logger.info("re正常完成，保存到dict中...")
     instance_dict[CompareConstant.recalculate_time] = recalculate_time
@@ -702,6 +704,7 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
 
 
     logger.info("Start calculate obj with (no_cuts, cuts_pred, cuts_pred_re)")
+    
     obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
         feat, cuts_pred, cuts_pred_re, inference_sddip, fw_n_samples, logger
     )
@@ -743,7 +746,7 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
     return instance_dict
 
 
-def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag, config, re_time_limit, log_path):
+def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag, config, log_path):
     # === 每个进程单独日志 ===
     log_dir = os.path.join(log_path, "compare_logs")
     os.makedirs(log_dir, exist_ok=True)
@@ -773,7 +776,7 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
 
     feat = instance_dict[CompareConstant.feat]
     cuts_pred = instance_dict[CompareConstant.cuts_pred]
-    x_array = instance_dict[CompareConstant.x_pred]
+    x_pred = instance_dict[CompareConstant.x_pred]
     logger.info(f"cuts_pred.shape: {cuts_pred.shape}")
     logger.info(cuts_pred)
 
@@ -782,21 +785,24 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     logger.info("re需要的参数：")
     logger.info(f"feat.device: {feat.device}")
     logger.info(f"cuts_pred.device: {cuts_pred.device}")
-    status, result = run_with_timeout(
-        _recalculate_cuts,
-        args=(feat, cuts_pred, x_array, inference_sddip, logger),
-        timeout=re_time_limit,
-        logger=logger
-    )
-    # 舍弃超时或出错的instance
-    if status == 'timeout':
-        logger.warning("Recalculate 超时，直接返回默认值")
-        return None
-    elif status == 'error':
-        logger.error("Recalculate 执行失败")
-        return None
-    else:  # 正常完成
-        cuts_pred_re, recalculate_time = result
+    logger.info(f"x_pred.device: {x_pred.device}")
+    # 直接在dual model求解中限制求解时间和精度
+    cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, x_pred, inference_sddip, logger)
+    # status, result = run_with_timeout(
+    #     _recalculate_cuts,
+    #     args=(),
+    #     timeout=re_time_limit,
+    #     logger=logger
+    # )
+    # # 舍弃超时或出错的instance
+    # if status == 'timeout':
+    #     logger.warning("Recalculate 超时，直接返回默认值")
+    #     return None
+    # elif status == 'error':
+    #     logger.error("Recalculate 执行失败")
+    #     return None
+    # else:  # 正常完成
+    #     cuts_pred_re, recalculate_time = result
 
     # re结果保存
     logger.info("re正常完成，保存到dict中...")
@@ -842,45 +848,45 @@ def _recalculate_cuts(feat, cuts_pred, x_array, inference_sddip, logger):
     recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat, cuts_pred, x_array, logger)
     return cuts_predicted_re, recalculate_time
 
-import logging
-import threading
-import queue
+# import logging
+# import threading
+# import queue
 
-def run_with_timeout(func, args=(), kwargs=None, timeout=60, logger=None):
-    """
-    在独立线程中执行函数 func ，超时则返回 ('timeout', None)，
-    正常结束返回 ('ok', func_result)，出错返回 ('error', exception)。
-    """
-    if kwargs is None:
-        kwargs = {}
-    q = queue.Queue()
+# def run_with_timeout(func, args=(), kwargs=None, timeout=60, logger=None):
+#     """
+#     在独立线程中执行函数 func ，超时则返回 ('timeout', None)，
+#     正常结束返回 ('ok', func_result)，出错返回 ('error', exception)。
+#     """
+#     if kwargs is None:
+#         kwargs = {}
+#     q = queue.Queue()
 
-    def wrapper():
-        try:
-            result = func(*args, **kwargs)
-            q.put(('ok', result))
-        except Exception as e:
-            if logger:
-                logger.exception("Function execution failed.")
-            q.put(('error', e))
+#     def wrapper():
+#         try:
+#             result = func(*args, **kwargs)
+#             q.put(('ok', result))
+#         except Exception as e:
+#             if logger:
+#                 logger.exception("Function execution failed.")
+#             q.put(('error', e))
 
-    # 启动线程
-    t = threading.Thread(target=wrapper, daemon=True)
-    t.start()
+#     # 启动线程
+#     t = threading.Thread(target=wrapper, daemon=True)
+#     t.start()
 
-    # 等待执行结果或超时
-    t.join(timeout)
+#     # 等待执行结果或超时
+#     t.join(timeout)
 
-    if t.is_alive():
-        if logger:
-            logger.warning(f"⚠️ 超时 {timeout}s，线程未完成（返回 timeout）")
-        return 'timeout', None
+#     if t.is_alive():
+#         if logger:
+#             logger.warning(f"⚠️ 超时 {timeout}s，线程未完成（返回 timeout）")
+#         return 'timeout', None
 
-    # 正常结束时从队列取结果
-    if not q.empty():
-        return q.get()
-    else:
-        return 'error', None
+#     # 正常结束时从队列取结果
+#     if not q.empty():
+#         return q.get()
+#     else:
+#         return 'error', None
 
 
 

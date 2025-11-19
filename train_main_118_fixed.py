@@ -10,20 +10,29 @@ def compare(trainer, config):
     num_instances = 10
     num_threads = 5
     max_iterations = 40
-    max_lag = 4
+    max_lag = 5
     fw_n_samples = 200
     config.compare_path = os.path.join(result_path, "compare", f"fixed_{config.num_data}_train_data_(1024,1024)_standard_gamma-{math.log10(gamma)}_max_lag-{max_lag}_max_iterations-{max_iterations}_fw-{fw_n_samples}")
-    result = trainer.compare_complete(
-        num_instances = num_instances,
-        # TODO 200个路径采样
-        fw_n_samples=fw_n_samples,
-        max_iterations=max_iterations,   # sddip迭代的最大次数，以及pred sddip和pred_re sddip 的最大迭代次数
-        # TODO 绘制这个图只需要几个数据就行
-        max_lag=max_lag,
-        sddip_timeout_sec=None,
-        compare_timeout_sec=None,
-        num_threads=num_threads,
-    )
+    try:
+    
+        result = trainer.compare_complete(
+            num_instances = num_instances,
+            # TODO 200个路径采样
+            fw_n_samples=fw_n_samples,
+            max_iterations=max_iterations,   # sddip迭代的最大次数，以及pred sddip和pred_re sddip 的最大迭代次数
+            # TODO 绘制这个图只需要几个数据就行
+            max_lag=max_lag,
+            sddip_timeout_sec=None,
+            compare_timeout_sec=None,
+            num_threads=num_threads,
+        )
+    finally:
+        from datetime import datetime
+        import torch
+        # 获取当前时间
+        now = datetime.now()
+        time_str = now.strftime("%Y%m%d_%H%M%S")
+        torch.save(result, f"compare_result_{time_str}.pkl")
 
 
 

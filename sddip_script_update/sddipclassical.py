@@ -1542,6 +1542,14 @@ class Algorithm:
                             dual_model.relaxed_terms[i] * dm[i] for i in range(len(dm))
                         )
 
+                        # dual_model.model.Params.OutputFlag = 1        # 打印求解日志
+                        # dual_model.model.Params.DisplayInterval = 1  # 每1秒打印一次
+                        # dual_model.model.Params.LogToConsole = 1     # 发送日志到控制台
+
+                        dual_model.model.Params.MIPGap = 2e-4        # 相对误差 0.01%
+                        dual_model.model.Params.TimeLimit = 30       # 每个模型最多运行 30 秒
+
+
                         dual_model.model.setObjective(total_objective)
                         dual_model.model.update()
                         dual_model.model.optimize()

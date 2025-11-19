@@ -27,8 +27,8 @@ class ModelBuilder(ABC):
         self.backsight_periods = backsight_periods
         self.model = gp.Model("MILP: Unit commitment")
         self.model.setParam("OutputFlag", 0)
-        self.model.setParam("IntFeasTol", 10 ** (-9))
-        self.model.setParam("NumericFocus", 3)
+        self.model.setParam("IntFeasTol", 10 ** (-9))  # 整数可行性容忍度，即判断一个整数变量是否“足够接近整数”
+        self.model.setParam("NumericFocus", 3)  # 控制求解器在处理数值不稳定或精度问题时的策略 3：非常注重数值稳定性，可能显著降低速度
 
         # Commitment decision
         self.x = []
