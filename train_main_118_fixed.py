@@ -7,7 +7,7 @@ from NN_torch_24.config import Config
 
 
 def compare(trainer, config):
-    num_instances = 20
+    num_instances = 10
     num_threads = 5
     max_iterations = 40
     max_lag = 4

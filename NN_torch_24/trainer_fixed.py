@@ -668,6 +668,7 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
 
     feat = instance_dict[CompareConstant.feat]
     cuts_pred = instance_dict[CompareConstant.cuts_pred]
+    x_array = instance_dict[CompareConstant.x_pred]
     logger.info(f"cuts_pred.shape: {cuts_pred.shape}")
     logger.info(cuts_pred)
 
@@ -678,7 +679,7 @@ def _process_instance_complete(instance_index, instance_dict, fw_n_samples, max_
     logger.info(f"cuts_pred.device: {cuts_pred.device}")
     status, result = run_with_timeout(
         _recalculate_cuts,
-        args=(feat, cuts_pred, inference_sddip, logger),
+        args=(feat, cuts_pred, x_array, inference_sddip, logger),
         timeout=re_time_limit,
         logger=logger
     )
@@ -772,6 +773,7 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
 
     feat = instance_dict[CompareConstant.feat]
     cuts_pred = instance_dict[CompareConstant.cuts_pred]
+    x_array = instance_dict[CompareConstant.x_pred]
     logger.info(f"cuts_pred.shape: {cuts_pred.shape}")
     logger.info(cuts_pred)
 
@@ -782,7 +784,7 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     logger.info(f"cuts_pred.device: {cuts_pred.device}")
     status, result = run_with_timeout(
         _recalculate_cuts,
-        args=(feat, cuts_pred, inference_sddip, logger),
+        args=(feat, cuts_pred, x_array, inference_sddip, logger),
         timeout=re_time_limit,
         logger=logger
     )
@@ -832,12 +834,12 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     logger.info(f"Process {instance_index} done.")
     return instance_dict
 
-def _recalculate_cuts(feat, cuts_pred, inference_sddip, logger):
+def _recalculate_cuts(feat, cuts_pred, x_array, inference_sddip, logger):
     """
     处理一个instance
     重新计算intercept
     """
-    recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat, cuts_pred, logger)
+    recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat, cuts_pred, x_array, logger)
     return cuts_predicted_re, recalculate_time
 
 import logging

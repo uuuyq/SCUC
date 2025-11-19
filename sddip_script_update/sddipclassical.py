@@ -1456,6 +1456,105 @@ class Algorithm:
     def add_z_Var_constrains(self, inner_model: ucmodelclassical.ClassicalModel):
         inner_model.add_z_var_constrains(self.problem_params.soc_max, self.problem_params.pg_min, self.problem_params.pg_max)
         return inner_model
+    
+    def intercept_recalculate_with_x(self, cuts_predicted, x_array, logger=None):
+        
+        # x.shape (n_stages-1, n_samples, n_vars_per_stage)
+        x_trial_point_len = len(self.problem_params.init_x_trial_point)
+        y_trial_point_len = len(self.problem_params.init_y_trial_point)
+        n_gens, n_backsight_periods = len(self.problem_params.init_x_bs_trial_point), len(self.problem_params.init_x_bs_trial_point[0])
+        x_bs_trial_point_len = n_gens * n_backsight_periods
+        soc_trial_point_len = len(self.problem_params.init_soc_trial_point)
+
+        n_pieces = cuts_predicted.shape[1]  # 15
+        n_samples = 1 # 每个cut的更新只使用一个x
+        # SB
+        cuts_predicted_recalculate = {}
+        # print("n_stage", self.problem_params.n_stages)
+        for t in reversed(range(1, self.problem_params.n_stages)):
+            for piece in range(n_pieces):
+                intercept_list = []
+                for k in range(n_samples):  # nums of trial points
+                    n_realizations = self.problem_params.n_realizations_per_stage[t]
+                    # Get trial points
+                    # ===== 使用 x_array 构造 trial_point =====
+                    stage_array = x_array[t-1, k, :]  # t 对应 x_array 索引 t-1
+                    # 切片得到各 trial_point 组件
+                    idx = 0
+                    x_trial_point = stage_array[idx: idx + x_trial_point_len].tolist()
+                    idx += x_trial_point_len
+
+                    y_trial_point = stage_array[idx: idx + y_trial_point_len].tolist()
+                    idx += y_trial_point_len
+
+                    x_bs_flat = stage_array[idx: idx + x_bs_trial_point_len].tolist()
+                    idx += x_bs_trial_point_len
+
+                    soc_trial_point = stage_array[idx:].tolist()
+
+                    # reshape x_bs
+                    x_bs_trial_point = []
+                    idx_bs = 0
+                    for g in range(n_gens):
+                        x_bs_trial_point.append(x_bs_flat[idx_bs: idx_bs + n_backsight_periods])
+                        idx_bs += n_backsight_periods
+
+                    trial_point = (
+                        x_trial_point
+                        + y_trial_point
+                        + [val for bs in x_bs_trial_point for val in bs]
+                        + soc_trial_point
+                    )
+
+                    for n in range(n_realizations):
+
+                        dm = cuts_predicted[t - 1][piece].tolist()
+
+                        # dual model MILP Z应该也是整数
+                        dual_model = ucmodelclassical.ClassicalModel(
+                            self.problem_params.n_buses,
+                            self.problem_params.n_lines,
+                            self.problem_params.n_gens,
+                            self.problem_params.n_storages,
+                            self.problem_params.gens_at_bus,
+                            self.problem_params.storages_at_bus,
+                            self.problem_params.backsight_periods,
+                            lp_relax=False,
+                        )
+                        dual_model: ucmodelclassical.ClassicalModel = (
+                            # 问题约束中没有Xa(n),转换为z与Xn的约束
+                            self.add_problem_constraints(dual_model, t, n)
+                        )
+                        dual_model.add_objective(self.problem_params.cost_coeffs)
+                        '''
+                        下边就是计算z与trial_point的差值relaxed_terms，前向过程需要relaxed_terms==0，现在不需要
+                        '''
+                        dual_model.calculate_relaxed_terms(
+                            x_trial_point,
+                            y_trial_point,
+                            x_bs_trial_point,
+                            soc_trial_point,
+                        )
+                        # print("len(dm)", len(dm))
+                        # print("dual_model.relaxed_terms", len(dual_model.relaxed_terms))
+                        # 目标函数的减号：relaxed_terms = Z - X_trial
+                        total_objective = dual_model.objective_terms - gp.quicksum(
+                            dual_model.relaxed_terms[i] * dm[i] for i in range(len(dm))
+                        )
+
+                        dual_model.model.setObjective(total_objective)
+                        dual_model.model.update()
+                        dual_model.model.optimize()
+                        dual_value = dual_model.model.getObjective().getValue()
+
+
+                        intercept_k_n = dual_value - dm @ np.array(trial_point)
+                        intercept_list.append(intercept_k_n)
+                intercept = mean(intercept_list)
+                # print("t, piece", t - 1, piece)
+                cuts_predicted_recalculate[(t - 1, piece)] = cuts_predicted[t - 1][piece].tolist() + [intercept]
+                self.logger.info(f"t, piece, cuts: {t - 1}, {piece}, {cuts_predicted_recalculate[(t - 1, piece)]}")
+        return cuts_predicted_recalculate
 
     def intercept_recalculate(self, cuts_predicted, logger=None):
 
@@ -1642,7 +1741,6 @@ class Algorithm:
         return cuts_predicted_recalculate
 
     def get_x_with_nocut(self, num_x):
-        import torch
 
         # 场景采样个数
         n_samples = num_x
@@ -1747,7 +1845,7 @@ class Algorithm:
                 x_k_list.append(result.get_values(0, k, t))
             x_list.append(x_k_list)
         x_array = np.array(x_list, dtype=np.float32)
-
+        # shape (n_stages-1, n_samples, n_vars_per_stage)
         return x_array
 
     '''IFR算法'''

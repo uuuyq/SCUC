@@ -5,8 +5,8 @@ from pathlib import Path
 from NN_torch_24.config import Config
 
 def compare(trainer, config):
-    num_instances = 9
-    num_threads = 3
+    num_instances = 4
+    num_threads = 1
     max_lag = 4
     config.compare_path = os.path.join(result_path, "compare",
                                        f"quick_{config.num_data}_train_data_(1024,1024)_standard_gamma-{math.log10(gamma)}_max_lag-{max_lag}_max")
