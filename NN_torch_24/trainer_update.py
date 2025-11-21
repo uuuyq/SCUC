@@ -480,16 +480,15 @@ class TrainerUpdate:
         num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
         # sddip
         print(f"sddip: using {num_workers} processes for parallel...")
+
+
         func = partial(_process_sddip,
                        sddip_fw_n_samples=sddip_fw_n_samples,
                        config=self.config,
                        max_iterations=max_iterations,
-                       log_path=self.config.compare_path
                        )
-        data_sampled = multi_process(func, num_workers, data_sampled, sddip_timeout_sec)
+        multi_process(func, num_workers, data_sampled, sddip_timeout_sec)
         print("Parallel sddip complete.")
-        # 保存原始结果
-        torch.save(data_sampled, save_path)
 
     def compare_obj_multiprocess(self, data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads):
         """
@@ -511,13 +510,13 @@ class TrainerUpdate:
                        max_lag=max_lag,
                        config=self.config,
                        log_path=self.config.compare_path)
-        compare_obj_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
+        multi_process(func, num_workers, data_sampled, compare_timeout_sec)
 
         # 保存原始结果
-        torch.save(compare_obj_result, os.path.join(self.config.compare_path,
-                                        f"num-{len(data_sampled_sddip)}_compare_obj_result_fw-{obj_fw_n_samples}_max_lag-{max_lag}.pkl"))
+        # torch.save(compare_obj_result, os.path.join(self.config.compare_path,
+        #                                 f"num-{len(data_sampled_sddip)}_compare_obj_result_fw-{obj_fw_n_samples}_max_lag-{max_lag}.pkl"))
         print("Parallel comparison complete.")
-        return compare_obj_result
+        return 
 
     def compare_LB_multiprocess(self, data_sampled_sddip, num_instances, sddip_fw_n_samples, max_iterations, compare_timeout_sec, num_threads):
         """
@@ -532,12 +531,12 @@ class TrainerUpdate:
                        config=self.config,
                        log_path=self.config.compare_path)
 
-        compare_LB_result = multi_process(func, num_workers, data_sampled_sddip, compare_timeout_sec)
+        multi_process(func, num_workers, data_sampled_sddip, compare_timeout_sec)
         # 保存原始结果
-        torch.save(compare_LB_result, os.path.join(self.config.compare_path,
-                                                    f"num-{len(data_sampled_sddip)}_compare_LB_result_fw-{sddip_fw_n_samples}_max_iter-{max_iterations}.pkl"))
+        # torch.save(compare_LB_result, os.path.join(self.config.compare_path,
+        #                                             f"num-{len(data_sampled_sddip)}_compare_LB_result_fw-{sddip_fw_n_samples}_max_iter-{max_iterations}.pkl"))
         print("Parallel comparison complete.")
-        return compare_LB_result
+        return
 
     def compare_quick(self, num_instances, fw_n_samples, max_lag,
                          compare_timeout_sec, num_threads):
@@ -568,56 +567,47 @@ class TrainerUpdate:
                        config=self.config,
                        log_path=self.config.compare_path)
 
-        compare_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
+        multi_process(func, num_workers, data_sampled, compare_timeout_sec)
 
         # 保存原始结果
-        torch.save(compare_result, os.path.join(self.config.compare_path,
-                                                f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
+        # torch.save(compare_result, os.path.join(self.config.compare_path,
+        #                                         f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
         print("Parallel comparison complete.")
-        return compare_result
-
-
-
+        return
+    
 def multi_process(func, num_workers, data_sampled, timeout_sec=None):
-
-    result = []
-    with mp.Pool(processes=num_workers) as pool:
-        async_results = [pool.apply_async(func, args=(i, data_sampled[i])) for i in range(len(data_sampled))]
-
+    with mp.Pool(processes=num_workers) as pool: 
+        async_results = [pool.apply_async(func, args=(i, data_sampled[i])) for i in range(len(data_sampled))] 
         for i, async_result in enumerate(async_results):
             try:
                 if timeout_sec is None:
-                    res = async_result.get()
+                    async_result.get()
                 else:
-                    res = async_result.get(timeout=timeout_sec)
-                if res is not None:  # 只保存有效结果
-                    result.append(res)
+                    async_result.get(timeout=timeout_sec)
             except mp.TimeoutError:
                 print(f"⚠️ Instance {i} timed out after {timeout_sec} seconds!")
             except Exception as e:
                 print(f"❌ Instance {i} failed with error: {e}")
-    return result
 
 
-
-def _process_sddip(instance_index, instance_dict, sddip_fw_n_samples, config, max_iterations, log_path):
+def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterations):
     # === 每个进程单独日志 ===
-    log_dir = os.path.join(log_path, "sddip_logs")  # 日志保存位置
+    log_dir = os.path.join(config.compare_path, "sddip_logs")  # 日志保存位置
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{instance_index}.log")
+    log_file = os.path.join(log_dir, f"process_{index}.log")
     # 清空旧日志处理器
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
     logging.basicConfig(
         level=logging.INFO,
-        format=f"[%(asctime)s][Process {instance_index}][%(levelname)s] %(message)s",
+        format=f"[%(asctime)s][Process {index}][%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file, mode='w', encoding='utf-8'),
             # logging.StreamHandler()  # 若希望仍打印到控制台可加这一行
         ]
     )
     logger = logging.getLogger(__name__)
-    logger.info(f"Process {instance_index} start")
+    logger.info(f"Process {index} start")
 
     # === 正式计算 ===
     inference_sddip = Infer(
@@ -644,8 +634,9 @@ def _process_sddip(instance_index, instance_dict, sddip_fw_n_samples, config, ma
     instance_dict[CompareConstant.obj_sddip] = obj_list
     instance_dict[CompareConstant.LB_sddip] = LB_list
 
-    save_path = os.path.join(log_path, "sddip_result") 
+    save_path = os.path.join(config.compare_path, "sddip_result") 
     os.makedirs(save_path, exist_ok=True)
+    instance_index = instance_dict[CompareConstant.instance_index]
     save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
     torch.save(instance_dict, save_file)  # 分开保存
 
@@ -653,7 +644,7 @@ def _process_sddip(instance_index, instance_dict, sddip_fw_n_samples, config, ma
 
 
 
-def _process_obj(instance_index, instance_dict, obj_fw_n_samples, max_lag, config, log_path):
+def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
     """
     单个样本的处理逻辑
     计算这几种的obj
@@ -661,22 +652,22 @@ def _process_obj(instance_index, instance_dict, obj_fw_n_samples, max_lag, confi
     """
 
     # === 每个进程单独日志 ===
-    log_dir = os.path.join(log_path, "compare_obj_logs")
+    log_dir = os.path.join(config.compare_path, "compare_obj_logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{instance_index}.log")
+    log_file = os.path.join(log_dir, f"process_{index}.log")
     # 清空旧日志处理器
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
     logging.basicConfig(
         level=logging.INFO,
-        format=f"[%(asctime)s][Process {instance_index}][%(levelname)s] %(message)s",
+        format=f"[%(asctime)s][Process {index}][%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file, mode='w', encoding='utf-8'),
             # logging.StreamHandler()  # 若希望仍打印到控制台可加这一行
         ]
     )
     logger = logging.getLogger(__name__)
-    logger.info(f"Process {instance_index} start")
+    logger.info(f"Process {index} start")
 
     # === 正式计算 ===
     inference_sddip = Infer(
@@ -746,12 +737,16 @@ def _process_obj(instance_index, instance_dict, obj_fw_n_samples, max_lag, confi
                                                                          + instance_dict[CompareConstant.time_pred_re])
             instance_dict[CompareConstant.obj_pred_sddip_list[i]] = obj_list_pred
             instance_dict[CompareConstant.obj_pred_re_sddip_list[i]] = obj_list_pred_re
+    logger.info(f"Process {index} done.")
 
-
-    logger.info(f"Process {instance_index} done.")
+    save_path = os.path.join(config.compare_path, "compare_obj_result") 
+    os.makedirs(save_path, exist_ok=True)
+    instance_index = instance_dict[CompareConstant.instance_index]
+    save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
+    torch.save(instance_dict, save_file)  # 分开保存
     return instance_dict
 
-def _process_LB(instance_index, instance_dict, sddip_fw_n_samples, max_iterations, config, log_path):
+def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config):
     """
         单个样本的处理逻辑
         计算这几种的obj
@@ -759,22 +754,22 @@ def _process_LB(instance_index, instance_dict, sddip_fw_n_samples, max_iteration
         """
 
     # === 每个进程单独日志 ===
-    log_dir = os.path.join(log_path, "compare_LB_logs")
+    log_dir = os.path.join(config.compare_path, "compare_LB_logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{instance_index}.log")
+    log_file = os.path.join(log_dir, f"process_{index}.log")
     # 清空旧日志处理器
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
     logging.basicConfig(
         level=logging.INFO,
-        format=f"[%(asctime)s][Process {instance_index}][%(levelname)s] %(message)s",
+        format=f"[%(asctime)s][Process {index}][%(levelname)s] %(message)s",
         handlers=[
             logging.FileHandler(log_file, mode='w', encoding='utf-8'),
             # logging.StreamHandler()  # 若希望仍打印到控制台可加这一行
         ]
     )
     logger = logging.getLogger(__name__)
-    logger.info(f"Process {instance_index} start")
+    logger.info(f"Process {index} start")
 
     # === 正式计算 ===
     inference_sddip = Infer(
@@ -805,6 +800,12 @@ def _process_LB(instance_index, instance_dict, sddip_fw_n_samples, max_iteration
     instance_dict[CompareConstant.time_pred_re_sddip] = time_pred_re
     instance_dict[CompareConstant.obj_pred_re_sddip] = obj_pred_re_list
     instance_dict[CompareConstant.LB_pred_re_sddip] = LB_pred_re_list
+
+    save_path = os.path.join(config.compare_path, "compare_LB_result") 
+    os.makedirs(save_path, exist_ok=True)
+    instance_index = instance_dict[CompareConstant.instance_index]
+    save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
+    torch.save(instance_dict, save_file)  # 分开保存
 
     return instance_dict
 
