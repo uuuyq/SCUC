@@ -1610,8 +1610,8 @@ class Algorithm:
                         )
                         # print("len(dm)", len(dm))
                         # print("dual_model.relaxed_terms", len(dual_model.relaxed_terms))
-                        # 目标函数的减号：relaxed_terms = Z - X_trial
-                        total_objective = dual_model.objective_terms - gp.quicksum(
+                        # 目标函数应该是： obj + dm (x_trail - z_x)
+                        total_objective = dual_model.objective_terms + gp.quicksum(
                             dual_model.relaxed_terms[i] * dm[i] for i in range(len(dm))
                         )
 
@@ -1633,7 +1633,11 @@ class Algorithm:
                         intercept_list.append(intercept_k_n)
                 intercept = mean(intercept_list)
                 # print("t, piece", t - 1, piece)
-                cuts_predicted_recalculate[(t - 1, piece)] = cuts_predicted[t - 1][piece].tolist() + [intercept]
+                cut_re = cuts_predicted[t - 1][piece].tolist() + [intercept]
+                # 计算的cut应该要添加到问题中，用于下一个阶段的re
+                self.cuts_storage.add(piece, k, t - 1, cut_re)
+                cuts_predicted_recalculate[(t - 1, piece)] = cut_re
+                self.cut_add_flag = True
                 self.logger.info(f"t, piece, cuts: {t - 1}, {piece}, {cuts_predicted_recalculate[(t - 1, piece)]}")
         return cuts_predicted_recalculate
 
@@ -1802,8 +1806,8 @@ class Algorithm:
                         )
                         # print("len(dm)", len(dm))
                         # print("dual_model.relaxed_terms", len(dual_model.relaxed_terms))
-                        # 目标函数的减号：relaxed_terms = Z - X_trial
-                        total_objective = dual_model.objective_terms - gp.quicksum(
+                        # 目标函数应该是： obj + dm (x_trail - z_x)
+                        total_objective = dual_model.objective_terms + gp.quicksum(
                             dual_model.relaxed_terms[i] * dm[i] for i in range(len(dm))
                         )
 
@@ -1817,7 +1821,11 @@ class Algorithm:
                         intercept_list.append(intercept_k_n)
                 intercept = mean(intercept_list)
                 # print("t, piece", t - 1, piece)
-                cuts_predicted_recalculate[(t - 1, piece)] = cuts_predicted[t - 1][piece].tolist() + [intercept]
+                cut_re = cuts_predicted[t - 1][piece].tolist() + [intercept]
+                # 计算的cut应该要添加到问题中，用于下一个阶段的re
+                self.cuts_storage.add(piece, k, t - 1, cut_re)
+                self.cut_add_flag = True
+                cuts_predicted_recalculate[(t - 1, piece)] = cut_re
                 self.logger.info(f"t, piece, cuts: {t - 1}, {piece}, {cuts_predicted_recalculate[(t - 1, piece)]}")
         return cuts_predicted_recalculate
 
@@ -2467,8 +2475,8 @@ class Algorithm:
                 )
                 # print("len(dm)", len(dm))
                 # print("dual_model.relaxed_terms", len(dual_model.relaxed_terms))
-                # 目标函数的减号：relaxed_terms = Z - X_trial
-                total_objective = dual_model.objective_terms - gp.quicksum(
+                # 目标函数应该是： obj + dm (x_trail - z_x)
+                total_objective = dual_model.objective_terms + gp.quicksum(
                     dual_model.relaxed_terms[i] * dm[i] for i in range(len(dm))
                 )
 
