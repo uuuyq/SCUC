@@ -511,7 +511,6 @@ class TrainerUpdate:
                        max_lag=max_lag,
                        config=self.config,
                        log_path=self.config.compare_path)
-
         compare_obj_result = multi_process(func, num_workers, data_sampled, compare_timeout_sec)
 
         # 保存原始结果
@@ -644,6 +643,11 @@ def _process_sddip(instance_index, instance_dict, sddip_fw_n_samples, config, ma
     instance_dict[CompareConstant.time_sddip] = time_list
     instance_dict[CompareConstant.obj_sddip] = obj_list
     instance_dict[CompareConstant.LB_sddip] = LB_list
+
+    save_path = os.path.join(log_path, "sddip_result") 
+    os.makedirs(save_path, exist_ok=True)
+    save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
+    torch.save(instance_dict, save_file)  # 分开保存
 
     return instance_dict
 

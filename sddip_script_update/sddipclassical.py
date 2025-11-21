@@ -274,8 +274,7 @@ class Algorithm:
             v_lower = self.lower_bound(0)
             LB_list.append(v_lower)
 
-            if len(LB_list) >= stop_stabilization_count + 1 and \
-                    (LB_list[-1] - LB_list[-(stop_stabilization_count + 1)]) / (abs(LB_list[-(stop_stabilization_count + 1)]) + 1e-8) < self.relative_tolerance:
+            if self.check_convergence(LB_list, stop_stabilization_count, factor=5):
                 break
             i += 1
         self.logger.info("#### SDDiP-Algorithm finished ####")
@@ -495,7 +494,6 @@ class Algorithm:
                     uc_fw.model.computeIIS()
                     uc_fw.model.write("model.ilp")
                     raise
-
 
                 # Value of stage t objective function
                 v_value_function = uc_fw.model.getObjective().getValue()
