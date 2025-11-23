@@ -306,7 +306,7 @@ class TrainerUpdate:
         x_array = inference_sddip.calculate_x(feat, self.config.n_pieces)
         return x_array
 
-    def sample_test_dataset(self, num_instances):
+    def sample_test_dataset_quick(self, num_instances):
         """
         选取test_data中的部分数据
         """
@@ -366,6 +366,65 @@ class TrainerUpdate:
             })
 
         torch.save(data_sampled, save_path)
+
+        return data_sampled
+
+    def sample_test_dataset(self, num_instances, instance_index_list=None):
+        """
+        选取test_data中的部分数据，排除sddip_result中已经有的instance
+        """
+        print(f"sample_test_dataset start... {num_instances}")
+        # 随机选取dataset中的部分数据
+        import random
+        random.seed(43)
+
+        test_dataset = self.test_dataset
+        total = len(test_dataset)
+
+        # 排除sddip_result中已经有的instance
+        eligible_indices = []
+        for idx in range(total):
+            feat, scenario, cut, x = test_dataset[idx]
+            instance_index = feat[0][0].item() if isinstance(feat[0][0], torch.Tensor) else feat[0][0]
+            instance_index = int(instance_index)
+            if instance_index_list is not None and instance_index in instance_index_list:
+                continue
+            else:
+                eligible_indices.append(idx)
+
+
+        num_samples = min(num_instances, len(eligible_indices))
+
+        # 抽取
+        sampled_indices = random.sample(eligible_indices, num_samples)
+
+        print(f"采样的instance: {sampled_indices}")
+
+        test_dataset_sampled = Subset(test_dataset, sampled_indices)
+        print("len(test_dataset_sampled)", len(test_dataset_sampled))
+        # 将数据合并到一个dict中
+
+        data_sampled = []  # ← 从 dict[list] 改为 list[dict]
+
+        for i in range(len(test_dataset_sampled)):
+            feat, scenario, cut, x = test_dataset_sampled[i]
+
+            # 保证 在 CPU，可以安全传多进程
+            feat = feat.detach().cpu().numpy().copy()
+            scenario = scenario.detach().cpu().numpy().copy()
+            cut = cut.detach().cpu().numpy().copy()
+            x = x.detach().cpu().numpy().copy()
+
+            instance_index = feat[0][0]
+
+            # 组装一个 dict，加入 list
+            data_sampled.append({
+                CompareConstant.instance_index: instance_index,
+                CompareConstant.feat: feat,
+                CompareConstant.scenario: scenario,
+                CompareConstant.cuts_train: cut,
+                CompareConstant.x_train: x,
+            })
 
         return data_sampled
 
@@ -461,21 +520,11 @@ class TrainerUpdate:
         return data_sampled
 
 
-    def sampled_sddip(self, num_instances, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads):
+    def sampled_sddip(self, data_sampled, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads):
         # 创建保存结果的文件夹
         if self.config.compare_path is None:
             raise Exception("compare_path is None 需要设置compare_path为测试结果保存的位置")
         os.makedirs(self.config.compare_path, exist_ok=True)
-
-        save_path = os.path.join(self.config.compare_path, f"num-{num_instances}_data_sampled_sddip_fw-{sddip_fw_n_samples}_iter-{max_iterations}.pkl")
-        if os.path.exists(save_path):
-            print(f"{save_path} 已存在，直接返回")
-            with open(save_path, "rb") as f:
-                data_sampled = torch.load(f)
-            return data_sampled
-
-        # 内部判断是否已经存在
-        data_sampled = self.sample_test_dataset(num_instances)
 
         num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
         # sddip
@@ -551,7 +600,7 @@ class TrainerUpdate:
         os.makedirs(self.config.compare_path, exist_ok=True)
 
         # 内部判断是否已经存在
-        data_sampled = self.sample_test_dataset(num_instances)
+        data_sampled = self.sample_test_dataset_quick(num_instances)
         data_sampled = self.sampled_read(data_sampled)
         data_sampled = self._get_pred_cuts(data_sampled)
 
@@ -575,9 +624,21 @@ class TrainerUpdate:
         print("Parallel comparison complete.")
         return
     
+    
+import psutil 
+def set_high_priority():
+    """提升当前进程为高优先级（Windows）"""
+    p = psutil.Process(os.getpid())
+    try:
+        p.nice(psutil.HIGH_PRIORITY_CLASS)
+    except Exception as e:
+        print(f"⚠️ Failed to set high priority: {e}")
+
 def multi_process(func, num_workers, data_sampled, timeout_sec=None):
     with mp.Pool(processes=num_workers) as pool: 
-        async_results = [pool.apply_async(func, args=(i, data_sampled[i])) for i in range(len(data_sampled))] 
+        async_results = [pool.apply_async(_worker_wrapper, args=(i, data_sampled[i], func)) 
+                         for i in range(len(data_sampled))] 
+
         for i, async_result in enumerate(async_results):
             try:
                 if timeout_sec is None:
@@ -588,6 +649,11 @@ def multi_process(func, num_workers, data_sampled, timeout_sec=None):
                 print(f"⚠️ Instance {i} timed out after {timeout_sec} seconds!")
             except Exception as e:
                 print(f"❌ Instance {i} failed with error: {e}")
+
+def _worker_wrapper(i, data, func):
+    """子进程包装函数，设置高优先级后调用用户函数"""
+    set_high_priority()
+    func(i, data)
 
 
 def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterations):

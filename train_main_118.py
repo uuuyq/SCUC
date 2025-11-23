@@ -6,12 +6,17 @@ from NN_torch_24.trainer_update import TrainerUpdate
 from NN_torch_24.config import Config
 
 def sampled_sddip(trainer):
+    # 内部判断是否已经存在
     num_instances = 10
+    data_sampled = trainer.sample_test_dataset(num_instances,
+       instance_index_list=[56,347,392,1576,1964,2026,2039,2566,2567,2678])
+
+
     num_threads = 3
     max_iterations = 40
     sddip_fw_n_samples = 10
     sddip_timeout_sec = None
-    trainer.sampled_sddip(num_instances, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads)
+    trainer.sampled_sddip(data_sampled, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads)
     
 
 
@@ -46,6 +51,8 @@ def load_sddip_result(config):
         file_path = os.path.join(save_path, file_name)
         instance_dict = torch.load(file_path)
         all_instances.append(instance_dict)
+
+    print(f"加载sddip_result数据，总共：{len(all_instances)}")
 
     return all_instances
 
@@ -99,8 +106,8 @@ def main(trainer, config):
 
     sampled_sddip(trainer)
 
-    # data_sampled_sddip = load_sddip_result(config)
-    # compare_obj(trainer, data_sampled_sddip)
+    data_sampled_sddip = load_sddip_result(config)
+    compare_obj(trainer, data_sampled_sddip)
     # compare_LB(trainer, data_sampled_sddip)
 
 if __name__ == '__main__':
