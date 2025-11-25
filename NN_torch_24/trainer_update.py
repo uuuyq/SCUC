@@ -376,13 +376,13 @@ class TrainerUpdate:
         print(f"sample_test_dataset start... {num_instances}")
         # 随机选取dataset中的部分数据
         import random
-        random.seed(43)
 
         test_dataset = self.test_dataset
         total = len(test_dataset)
 
         # 排除sddip_result中已经有的instance
         eligible_indices = []
+        eligible_indexes = []
         for idx in range(total):
             feat, scenario, cut, x = test_dataset[idx]
             instance_index = feat[0][0].item() if isinstance(feat[0][0], torch.Tensor) else feat[0][0]
@@ -391,14 +391,16 @@ class TrainerUpdate:
                 continue
             else:
                 eligible_indices.append(idx)
-
+                eligible_indexes.append(instance_index)
 
         num_samples = min(num_instances, len(eligible_indices))
 
         # 抽取
-        sampled_indices = random.sample(eligible_indices, num_samples)
+        sample_positions = random.sample(range(len(eligible_indices)), num_samples)
 
-        print(f"采样的instance: {sampled_indices}")
+        sampled_indices = [eligible_indices[pos] for pos in sample_positions]
+        sampled_indexes = [eligible_indexes[pos] for pos in sample_positions]
+        print(f"采样的instance: {sampled_indexes}")
 
         test_dataset_sampled = Subset(test_dataset, sampled_indices)
         print("len(test_dataset_sampled)", len(test_dataset_sampled))
@@ -557,8 +559,7 @@ class TrainerUpdate:
         func = partial(_process_obj,
                        obj_fw_n_samples=obj_fw_n_samples,
                        max_lag=max_lag,
-                       config=self.config,
-                       log_path=self.config.compare_path)
+                       config=self.config)
         multi_process(func, num_workers, data_sampled, compare_timeout_sec)
 
         # 保存原始结果
@@ -577,8 +578,7 @@ class TrainerUpdate:
         func = partial(_process_LB,
                        sddip_fw_n_samples=sddip_fw_n_samples,
                        max_iterations=max_iterations,
-                       config=self.config,
-                       log_path=self.config.compare_path)
+                       config=self.config)
 
         multi_process(func, num_workers, data_sampled_sddip, compare_timeout_sec)
         # 保存原始结果
@@ -658,9 +658,10 @@ def _worker_wrapper(i, data, func):
 
 def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterations):
     # === 每个进程单独日志 ===
-    log_dir = os.path.join(config.compare_path, "sddip_logs")  # 日志保存位置
+    instance_index = instance_dict[CompareConstant.instance_index]
+    log_dir = os.path.join(config.compare_path, f"sddip_logs")  # 日志保存位置
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{index}.log")
+    log_file = os.path.join(log_dir, f"{instance_index}_instance.log")
     # 清空旧日志处理器
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
@@ -686,7 +687,7 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
 
     feat = instance_dict[CompareConstant.feat]
     logger.info(f"feat: {feat}")
-    time_list, obj_list, LB_list = calculate_obj_with_sddip_iteration(
+    time_list, obj_list, LB_list, cuts_array = calculate_obj_with_sddip_iteration(
         inference_sddip=inference_sddip,
         feat=feat,
         cuts=None,
@@ -699,10 +700,11 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
     instance_dict[CompareConstant.time_sddip] = time_list
     instance_dict[CompareConstant.obj_sddip] = obj_list
     instance_dict[CompareConstant.LB_sddip] = LB_list
+    instance_dict[CompareConstant.cuts_sddip] = cuts_array
 
     save_path = os.path.join(config.compare_path, "sddip_result") 
     os.makedirs(save_path, exist_ok=True)
-    instance_index = instance_dict[CompareConstant.instance_index]
+    
     save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
     torch.save(instance_dict, save_file)  # 分开保存
 
@@ -718,9 +720,10 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
     """
 
     # === 每个进程单独日志 ===
+    instance_index = instance_dict[CompareConstant.instance_index]
     log_dir = os.path.join(config.compare_path, "compare_obj_logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{index}.log")
+    log_file = os.path.join(log_dir, f"{instance_index}_instance.log")
     # 清空旧日志处理器
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
@@ -767,22 +770,27 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
 
     logger.info("############Start calculate obj################")
 
-    cuts_sddip = instance_dict[CompareConstant.cuts_sddip]
+
 
     # nocut pred pred_re 对应的obj
     samples = inference_sddip.get_fw_samples(feat, obj_fw_n_samples)
     obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
         feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger
     )
-    # sddip收敛对应的obj
-    obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts_sddip)
-    logger.info("################calculate pred_re obj complete#################")
 
     # obj结果保存
     instance_dict[CompareConstant.obj_nocut] = obj_list_nocut
     instance_dict[CompareConstant.obj_pred] = obj_list_pred
     instance_dict[CompareConstant.obj_pred_re] = obj_list_pred_re
-    instance_dict[CompareConstant.obj_sddip] = obj_list_sddip
+
+    # sddip收敛对应的obj
+    cuts_sddip = instance_dict[CompareConstant.cuts_sddip]
+    if cuts_sddip is not None:
+        # 忘记保存cuts_sddip，而是在
+        obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts_sddip)
+        instance_dict[CompareConstant.obj_sddip] = obj_list_sddip
+
+    logger.info("################calculate pred_re obj complete#################")
 
 
     if max_lag > 0:
@@ -807,7 +815,7 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
 
     save_path = os.path.join(config.compare_path, "compare_obj_result") 
     os.makedirs(save_path, exist_ok=True)
-    instance_index = instance_dict[CompareConstant.instance_index]
+    
     save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
     torch.save(instance_dict, save_file)  # 分开保存
     return instance_dict
@@ -820,9 +828,10 @@ def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config
         """
 
     # === 每个进程单独日志 ===
+    instance_index = instance_dict[CompareConstant.instance_index]
     log_dir = os.path.join(config.compare_path, "compare_LB_logs")
     os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{index}.log")
+    log_file = os.path.join(log_dir, f"{instance_index}_instance.log")
     # 清空旧日志处理器
     for h in logging.root.handlers[:]:
         logging.root.removeHandler(h)
@@ -852,12 +861,12 @@ def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config
     logger.info("##########pred sddip start##############")
     cuts_pred = instance_dict[CompareConstant.cuts_pred]
     time_pred = instance_dict[CompareConstant.time_pred]
-    time_pred_list, obj_pred_list, LB_pred_list = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred, sddip_fw_n_samples, time_pred, max_iterations,
+    time_pred_list, obj_pred_list, LB_pred_list, cuts_array_pred = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred, sddip_fw_n_samples, time_pred, max_iterations,
                                        logger)
     logger.info("##########pred re sddip start##############")
     cuts_pred_re = instance_dict[CompareConstant.cuts_pred_re]
     time_pred_re = instance_dict[CompareConstant.time_pred_re]
-    time_pred_re, obj_pred_re_list, LB_pred_re_list = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred_re, sddip_fw_n_samples, time_pred_re, max_iterations,
+    time_pred_re, obj_pred_re_list, LB_pred_re_list, cuts_array_pred_re = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred_re, sddip_fw_n_samples, time_pred_re, max_iterations,
                                        logger)
 
     instance_dict[CompareConstant.time_pred_sddip] = time_pred_list
@@ -869,7 +878,7 @@ def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config
 
     save_path = os.path.join(config.compare_path, "compare_LB_result") 
     os.makedirs(save_path, exist_ok=True)
-    instance_index = instance_dict[CompareConstant.instance_index]
+    
     save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
     torch.save(instance_dict, save_file)  # 分开保存
 
@@ -1010,6 +1019,6 @@ def calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts, fw_n_samples
     需要计算两种：没有cut的sddip收敛，以及在预测cut的基础上的结果
     :param additional_time: pred或re的额外时间
     """
-    time_list, obj_list, LB_list = inference_sddip.sddip_fw_n_samples(feat, cuts, fw_n_samples, max_iterations, logger)
+    time_list, obj_list, LB_list, cuts_array = inference_sddip.sddip_fw_n_samples(feat, cuts, fw_n_samples, max_iterations, logger)
     time_list = [additional_time + time for time in time_list]
-    return time_list, obj_list, LB_list
+    return time_list, obj_list, LB_list, cuts_array

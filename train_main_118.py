@@ -6,8 +6,7 @@ from NN_torch_24.trainer_update import TrainerUpdate
 from NN_torch_24.config import Config
 
 def sampled_sddip(trainer):
-    # 内部判断是否已经存在
-    num_instances = 10
+    num_instances = 12
     data_sampled = trainer.sample_test_dataset(num_instances,
        instance_index_list=[56,347,392,1576,1964,2026,2039,2566,2567,2678])
 
@@ -28,8 +27,8 @@ def compare_obj(trainer, data_sampled_sddip):
     trainer.compare_obj_multiprocess(data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads)
 
 def compare_LB(trainer, data_sampled_sddip):
-    num_instances = 5
-    num_threads = 5
+    num_instances = 6
+    num_threads = 2
 
     sddip_fw_n_samples = 10  # 重点在LB，因此计算obj的采样次数可以选择少一些，而如果obj也需要的话，需要增大采样次数
     max_iterations = 40
@@ -104,7 +103,7 @@ def main(trainer, config):
     # monitor_thread = threading.Thread(target=monitor_memory_objects, daemon=True)
     # monitor_thread.start()
 
-    sampled_sddip(trainer)
+    # sampled_sddip(trainer)
 
     data_sampled_sddip = load_sddip_result(config)
     compare_obj(trainer, data_sampled_sddip)

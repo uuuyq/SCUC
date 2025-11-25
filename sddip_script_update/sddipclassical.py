@@ -171,10 +171,9 @@ class Algorithm:
             return True
         return False
 
-    def get_all_cuts_array(self, n_iterations):
+    def get_all_cuts_array(self):
         """
         收集所有的cuts，整理为array shape[t, n, d] n是将k和i合在一起
-        :param n_iterations: 迭代次数，用i作为输入就行
         :return: cuts_array 三维数组
         """
         # 1. 按 t 收集所有 cuts
@@ -279,7 +278,10 @@ class Algorithm:
             i += 1
         self.logger.info("#### SDDiP-Algorithm finished ####")
 
-        return time_list, obj_list, LB_list
+        cuts_array = self.get_all_cuts_array()
+        self.logger.info(f"cuts_array.shape: {cuts_array.shape}")
+
+        return time_list, obj_list, LB_list, cuts_array
 
 
     def run_sddip_statistical(self, index, n_samples_statistical):

@@ -66,8 +66,8 @@ class Infer:
                     algo.cuts_storage.add(0, k, t, cuts[t][k].tolist())
             algo.cut_add_flag = True
         # 返回运行时间以及收敛obj
-        time_list, obj_list, LB_list = algo.run_sddip_fw_n_samples(fw_n_samples, max_iterations, logger)
-        return time_list, obj_list, LB_list
+        time_list, obj_list, LB_list, cuts_array = algo.run_sddip_fw_n_samples(fw_n_samples, max_iterations, logger)
+        return time_list, obj_list, LB_list, cuts_array
 
     def sddip_n_lag(self, feat, cuts, max_lag, logger=None):
         algo = self._get_algo(feat)
