@@ -6,14 +6,14 @@ from NN_torch_24.trainer_update import TrainerUpdate
 from NN_torch_24.config import Config
 
 def sampled_sddip(trainer):
-    num_instances = 12
+    num_instances = 15
     data_sampled = trainer.sample_test_dataset(num_instances,
-       instance_index_list=[56,347,392,1576,1964,2026,2039,2566,2567,2678])
+       )
 
 
     num_threads = 3
     max_iterations = 40
-    sddip_fw_n_samples = 10
+    sddip_fw_n_samples = 1
     sddip_timeout_sec = None
     trainer.sampled_sddip(data_sampled, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads)
     
@@ -22,7 +22,7 @@ def sampled_sddip(trainer):
 def compare_obj(trainer, data_sampled_sddip):
     obj_fw_n_samples = 200
     max_lag = 5
-    num_threads = 5
+    num_threads = 3
     compare_timeout_sec = None
     trainer.compare_obj_multiprocess(data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads)
 

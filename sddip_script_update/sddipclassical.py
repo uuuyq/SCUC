@@ -220,7 +220,7 @@ class Algorithm:
 
             lag_obj_list.append(obj_mean)
             lag_time_list.append(time.time() - start_time)
-            cuts_array = self.get_all_cuts_array(n_iterations=i + 1)
+            cuts_array = self.get_all_cuts_array()
             lag_cuts_list.append(cuts_array)
 
         self.logger.info("#### SDDiP-Algorithm finished ####")
