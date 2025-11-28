@@ -366,21 +366,21 @@ class Algorithm:
         if not hasattr(self, "primary_no_improve_limit"):
             self.primary_no_improve_limit = 3
 
+        # -------------------------------------------------------
+        # A) 开启永久切换：达到 limit → 永久切到 secondary
+        # -------------------------------------------------------
+        if enable_permanent_switch:
+            if self.primary_no_improve_count >= self.primary_no_improve_limit:
+                self.logger.info("##########永久切换至 lag 模式#########")
+                self.current_cut_mode = self.secondary_cut_mode
+        else:
             # -------------------------------------------------------
-            # A) 开启永久切换：达到 limit → 永久切到 secondary
+            # B) 未开启永久切换 → 使用原来的动态切换逻辑
             # -------------------------------------------------------
-            if enable_permanent_switch:
-                if self.primary_no_improve_count >= self.primary_no_improve_limit:
-                    self.logger.info("##########永久切换至 lag 模式#########")
-                    self.current_cut_mode = self.secondary_cut_mode
-            else:
-                # -------------------------------------------------------
-                # B) 未开启永久切换 → 使用原来的动态切换逻辑
-                # -------------------------------------------------------
-                if self.current_cut_mode == self.secondary_cut_mode:
-                    self.current_cut_mode = self.primary_cut_mode
-                elif no_improvement_condition:
-                    self.current_cut_mode = self.secondary_cut_mode
+            if self.current_cut_mode == self.secondary_cut_mode:
+                self.current_cut_mode = self.primary_cut_mode
+            elif no_improvement_condition:
+                self.current_cut_mode = self.secondary_cut_mode
 
         # ---------------- 实际调用 ----------------
         if self.current_cut_mode == self.primary_cut_mode:
