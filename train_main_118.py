@@ -27,8 +27,8 @@ def compare_obj(trainer, data_sampled_sddip):
     trainer.compare_obj_multiprocess(data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads)
 
 def compare_LB(trainer, data_sampled_sddip):
-    num_instances = 6
-    num_threads = 2
+    num_instances = 3
+    num_threads = 3
 
     sddip_fw_n_samples = 10  # 重点在LB，因此计算obj的采样次数可以选择少一些，而如果obj也需要的话，需要增大采样次数
     max_iterations = 40
@@ -36,8 +36,8 @@ def compare_LB(trainer, data_sampled_sddip):
     trainer.compare_LB_multiprocess(data_sampled_sddip, num_instances, sddip_fw_n_samples, max_iterations, compare_timeout_sec, num_threads)
 
 
-def load_sddip_result(config):
-    save_path = os.path.join(config.compare_path, "sddip_result")
+def load_result(config, file_name):
+    save_path = os.path.join(config.compare_path, file_name)
     if not os.path.exists(save_path):
         raise FileNotFoundError(f"保存路径不存在: {save_path}")
 
@@ -51,7 +51,7 @@ def load_sddip_result(config):
         instance_dict = torch.load(file_path)
         all_instances.append(instance_dict)
 
-    print(f"加载sddip_result数据，总共：{len(all_instances)}")
+    print(f"加载{file_name}数据，总共：{len(all_instances)}")
 
     return all_instances
 
@@ -107,9 +107,11 @@ def main(trainer, config):
 
     sampled_sddip(trainer)
 
-    data_sampled_sddip = load_sddip_result(config)
+    data_sampled_sddip = load_result(config, "sddip_result")
     compare_obj(trainer, data_sampled_sddip)
-    # compare_LB(trainer, data_sampled_sddip)
+
+    data_sampled_sddip = load_result(config, "compare_obj_result")
+    compare_LB(trainer, data_sampled_sddip)
 
 if __name__ == '__main__':
     ROOT = Path(__file__).parent.resolve()  # 项目根目录
