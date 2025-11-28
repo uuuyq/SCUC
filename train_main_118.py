@@ -6,7 +6,7 @@ from NN_torch_24.trainer_update import TrainerUpdate
 from NN_torch_24.config import Config
 
 def sampled_sddip(trainer):
-    num_instances = 15
+    num_instances = 6
     data_sampled = trainer.sample_test_dataset(num_instances,
        )
 
@@ -95,6 +95,8 @@ def monitor_memory_objects(interval=20.0):
     
 
 def main(trainer, config):
+    print("config.compare_path: ", config.compare_path)
+
     trainer.load_dataset()
 
     trainer.train()
@@ -103,7 +105,7 @@ def main(trainer, config):
     # monitor_thread = threading.Thread(target=monitor_memory_objects, daemon=True)
     # monitor_thread.start()
 
-    # sampled_sddip(trainer)
+    sampled_sddip(trainer)
 
     data_sampled_sddip = load_sddip_result(config)
     compare_obj(trainer, data_sampled_sddip)
@@ -143,7 +145,7 @@ if __name__ == '__main__':
 
     trainer = TrainerUpdate(config)
     config.compare_path = os.path.join(result_path, "compare",
-                                       f"{config.num_data}_data_{hidden_arr}_standard-{standard_flag}_gamma-{math.log10(gamma)}")
+                                       f"{config.num_data}_data_{hidden_arr}_standard-{standard_flag}_gamma-{math.log10(gamma)}-1128")
 
     main(trainer, config)
 

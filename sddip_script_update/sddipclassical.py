@@ -204,7 +204,6 @@ class Algorithm:
         if logger is not None:
             self.logger = logger
         self.logger.info("#### SDDiP-Algorithm started ####")
-        self.n_samples = self.n_samples_primary
 
         obj_list = []
 
@@ -342,6 +341,10 @@ class Algorithm:
         return mean(v_opt_k), v_upper_l, v_upper_r
 
     def SB_lag_iteration(self, LB_list, index):
+
+        enable_permanent_switch = False  # 关闭
+
+
         # 初始化计数器（只在第一次调用时）
         if not hasattr(self, "primary_no_improve_count"):
             self.primary_no_improve_count = 0
@@ -363,16 +366,21 @@ class Algorithm:
         if not hasattr(self, "primary_no_improve_limit"):
             self.primary_no_improve_limit = 3
 
-        # 达到限制 → 永久切换到 secondary
-        if self.primary_no_improve_count >= self.primary_no_improve_limit:
-            self.logger.info("##########切换至lag模式#########")
-            self.current_cut_mode = self.secondary_cut_mode
-        else:
-            # 原始逻辑：尽量使用 primary，无改善时切 secondary
-            if self.current_cut_mode == self.secondary_cut_mode:
-                self.current_cut_mode = self.primary_cut_mode
-            elif no_improvement_condition:
-                self.current_cut_mode = self.secondary_cut_mode
+            # -------------------------------------------------------
+            # A) 开启永久切换：达到 limit → 永久切到 secondary
+            # -------------------------------------------------------
+            if enable_permanent_switch:
+                if self.primary_no_improve_count >= self.primary_no_improve_limit:
+                    self.logger.info("##########永久切换至 lag 模式#########")
+                    self.current_cut_mode = self.secondary_cut_mode
+            else:
+                # -------------------------------------------------------
+                # B) 未开启永久切换 → 使用原来的动态切换逻辑
+                # -------------------------------------------------------
+                if self.current_cut_mode == self.secondary_cut_mode:
+                    self.current_cut_mode = self.primary_cut_mode
+                elif no_improvement_condition:
+                    self.current_cut_mode = self.secondary_cut_mode
 
         # ---------------- 实际调用 ----------------
         if self.current_cut_mode == self.primary_cut_mode:

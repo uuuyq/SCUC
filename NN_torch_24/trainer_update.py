@@ -762,35 +762,32 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
     cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, x_pred, inference_sddip, logger)
 
     # re结果保存
-    logger.info("###########re正常完成，保存到dict中##############")
+    logger.info("###########save recalculate cuts result##############")
     instance_dict[CompareConstant.recalculate_time] = recalculate_time
     instance_dict[CompareConstant.time_pred_re] = instance_dict[CompareConstant.time_pred] + recalculate_time
     instance_dict[CompareConstant.cuts_pred_re] = cuts_pred_re
 
 
     logger.info("############Start calculate obj################")
-
-
-
-    # nocut pred pred_re 对应的obj
+    # 采样路径，所有obj计算使用相同的路径
     samples = inference_sddip.get_fw_samples(feat, obj_fw_n_samples)
-    obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-        feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger
-    )
-
-    # obj结果保存
-    instance_dict[CompareConstant.obj_nocut] = obj_list_nocut
-    instance_dict[CompareConstant.obj_pred] = obj_list_pred
-    instance_dict[CompareConstant.obj_pred_re] = obj_list_pred_re
+    # nocut pred pred_re 对应的obj
+    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
+    obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_pred)
+    obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_pred_re)
 
     # sddip收敛对应的obj
     cuts_sddip = instance_dict[CompareConstant.cuts_sddip]
-    if cuts_sddip is not None:
-        # 忘记保存cuts_sddip，而是在
-        obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts_sddip)
-        instance_dict[CompareConstant.obj_sddip] = obj_list_sddip
+    obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts_sddip)
 
-    logger.info("################calculate pred_re obj complete#################")
+    # obj结果保存
+    logger.info("################save obj result#################")
+    instance_dict[CompareConstant.obj_nocut] = obj_list_nocut
+    instance_dict[CompareConstant.obj_pred] = obj_list_pred
+    instance_dict[CompareConstant.obj_pred_re] = obj_list_pred_re
+    instance_dict[CompareConstant.obj_sddip] = obj_list_sddip
+
+
 
 
     if max_lag > 0:
@@ -802,9 +799,9 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
         logger.info("###############pred_sddip和pred_re_sddip计算obj ##################")
         for i in range(max_lag):
             logger.info(f"Start calculate obj with additional_sddip_cuts: {i} / {max_lag}")
-            obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-                feat, lag_cuts_list[i], lag_cuts_list_re[i], inference_sddip, samples, logger
-            )
+            obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts=lag_cuts_list[i])
+            obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts=lag_cuts_list_re[i])
+
             instance_dict[CompareConstant.time_pred_sddip_list[i]] = (lag_time_list[i]
                                                                       + instance_dict[CompareConstant.time_pred])
             instance_dict[CompareConstant.time_pred_re_sddip_list[i]] = (lag_time_list_re[i]
@@ -863,21 +860,28 @@ def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config
     time_pred = instance_dict[CompareConstant.time_pred]
     time_pred_list, obj_pred_list, LB_pred_list, cuts_array_pred = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred, sddip_fw_n_samples, time_pred, max_iterations,
                                        logger)
+    
+    save_path = os.path.join(config.compare_path, "compare_LB_result") 
+    os.makedirs(save_path, exist_ok=True)
+
+    instance_dict[CompareConstant.time_pred_sddip] = time_pred_list
+    instance_dict[CompareConstant.obj_pred_sddip] = obj_pred_list
+    instance_dict[CompareConstant.LB_pred_sddip] = LB_pred_list
+
+    save_file = os.path.join(save_path, f"{instance_index}_pred_sddip_result.pkl")
+    torch.save(instance_dict, save_file)  # 分开保存
+
     logger.info("##########pred re sddip start##############")
     cuts_pred_re = instance_dict[CompareConstant.cuts_pred_re]
     time_pred_re = instance_dict[CompareConstant.time_pred_re]
     time_pred_re, obj_pred_re_list, LB_pred_re_list, cuts_array_pred_re = calculate_obj_with_sddip_iteration(inference_sddip, feat, cuts_pred_re, sddip_fw_n_samples, time_pred_re, max_iterations,
                                        logger)
 
-    instance_dict[CompareConstant.time_pred_sddip] = time_pred_list
-    instance_dict[CompareConstant.obj_pred_sddip] = obj_pred_list
-    instance_dict[CompareConstant.LB_pred_sddip] = LB_pred_list
     instance_dict[CompareConstant.time_pred_re_sddip] = time_pred_re
     instance_dict[CompareConstant.obj_pred_re_sddip] = obj_pred_re_list
     instance_dict[CompareConstant.LB_pred_re_sddip] = LB_pred_re_list
 
-    save_path = os.path.join(config.compare_path, "compare_LB_result") 
-    os.makedirs(save_path, exist_ok=True)
+    
     
     save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
     torch.save(instance_dict, save_file)  # 分开保存
@@ -937,10 +941,13 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
     instance_dict[CompareConstant.cuts_pred_re] = cuts_pred_re
 
     logger.info("Start calculate obj with (no_cuts, cuts_pred, cuts_pred_re)")
+    # 采样路径，所有obj计算使用相同的路径
     samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
-    obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-        feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger
-    )
+    # nocut pred pred_re 对应的obj
+    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
+    obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_pred)
+    obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_pred_re)
+
     # obj结果保存
     logger.info("calculate obj完成，保存到dict中...")
     instance_dict[CompareConstant.obj_nocut] = obj_list_nocut
@@ -954,10 +961,10 @@ def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag
         # 计算对应的obj
         for i in range(max_lag):
             logger.info(f"Start calculate obj with additional_sddip_cuts: {i} max_lag: {max_lag}")
-            samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
-            obj_list_nocut, obj_list_pred, obj_list_pred_re = _calculate_obj(
-                feat, lag_cuts_list[i], lag_cuts_list_re[i], inference_sddip, samples, logger
-            )
+
+            obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts=lag_cuts_list[i])
+            obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts=lag_cuts_list_re[i])
+
             instance_dict[CompareConstant.time_pred_sddip_list[i]] = (lag_time_list[i]
                                                                       + instance_dict[CompareConstant.time_pred])
             instance_dict[CompareConstant.time_pred_re_sddip_list[i]] = (lag_time_list_re[i]
@@ -975,22 +982,6 @@ def _recalculate_cuts(feat, cuts_pred, x_array, inference_sddip, logger):
     """
     recalculate_time, cuts_predicted_re = inference_sddip.intercept_recalculate(feat, cuts_pred, x_array, logger)
     return cuts_predicted_re, recalculate_time
-
-def _calculate_obj(feat, cuts_pred, cuts_pred_re, inference_sddip, samples, logger):
-    """
-    针对一个instance，由于要使用相同的sample，只能将nocut、pred、pred_re放在一起
-    只是计算不同cuts对应的obj
-    """
-    # nocut
-    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
-    logger.info("calculate nocut obj complete")
-    # pred
-    obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts_pred)
-    logger.info("calculate pred obj complete")
-    # pred_re
-    obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts_pred_re)
-    logger.info("calculate pred_re obj complete")
-    return obj_list_nocut, obj_list_pred, obj_list_pred_re
 
 
 def _pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger):
