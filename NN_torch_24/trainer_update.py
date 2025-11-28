@@ -708,6 +708,22 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
     save_file = os.path.join(save_path, f"{instance_index}_result.pkl")
     torch.save(instance_dict, save_file)  # 分开保存
 
+
+    # 比较nocut和sddip的obj，输出到日志中
+    # 采样路径，所有obj计算使用相同的路径
+    samples = inference_sddip.get_fw_samples(feat, 50)
+    logger.info("############ nocut 和 sddip obj 比较 ##############")
+    logger.info(f"采样路径数：{len(samples)} ")
+    logger.info(f"cuts_sddip: {cuts_array}")
+    # nocut pred pred_re 对应的obj
+    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
+    obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_array)
+    logger.info(f"obj_list_nocut: {obj_list_nocut}")
+    logger.info(f"obj_list_sddip: {obj_list_sddip}")
+    logger.info(f"mean obj_nocut: {sum(obj_list_nocut) / len(obj_list_nocut)}")
+    logger.info(f"mean obj_sddip: {sum(obj_list_sddip) / len(obj_list_sddip)}")
+
+
     return instance_dict
 
 
@@ -787,6 +803,11 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
     instance_dict[CompareConstant.obj_pred_re] = obj_list_pred_re
     instance_dict[CompareConstant.obj_sddip] = obj_list_sddip
 
+    logger.info("###############打印几种obj查看##################")
+    logger.info(f"mean obj_nocut: {sum(obj_list_nocut) / len(obj_list_nocut)}")
+    logger.info(f"mean obj_pred: {sum(obj_list_pred) / len(obj_list_pred)}")
+    logger.info(f"mean obj_pred_re: {sum(obj_list_pred_re) / len(obj_list_pred_re)}")
+    logger.info(f"mean obj_sddip: {sum(obj_list_sddip) / len(obj_list_sddip)}")
 
 
 

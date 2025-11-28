@@ -6,13 +6,13 @@ from NN_torch_24.trainer_update import TrainerUpdate
 from NN_torch_24.config import Config
 
 def sampled_sddip(trainer):
-    num_instances = 6
-    data_sampled = trainer.sample_test_dataset(num_instances,
-       )
-
-
+    num_instances = 3
     num_threads = 3
     max_iterations = 40
+
+    data_sampled = trainer.sample_test_dataset(num_instances,
+       )
+    
     sddip_fw_n_samples = 1
     sddip_timeout_sec = None
     trainer.sampled_sddip(data_sampled, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads)
@@ -21,17 +21,18 @@ def sampled_sddip(trainer):
 
 def compare_obj(trainer, data_sampled_sddip):
     obj_fw_n_samples = 200
-    max_lag = 5
     num_threads = 3
+    max_lag = 5
+
     compare_timeout_sec = None
     trainer.compare_obj_multiprocess(data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads)
 
 def compare_LB(trainer, data_sampled_sddip):
     num_instances = 3
     num_threads = 3
+    sddip_fw_n_samples = 1  # 重点在LB，因此计算obj的采样次数可以选择少一些，而如果obj也需要的话，需要增大采样次数
+    max_iterations = 40 - 15  # 太多也没有必要
 
-    sddip_fw_n_samples = 10  # 重点在LB，因此计算obj的采样次数可以选择少一些，而如果obj也需要的话，需要增大采样次数
-    max_iterations = 40
     compare_timeout_sec = None
     trainer.compare_LB_multiprocess(data_sampled_sddip, num_instances, sddip_fw_n_samples, max_iterations, compare_timeout_sec, num_threads)
 
