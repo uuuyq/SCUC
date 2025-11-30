@@ -698,7 +698,7 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
     )
 
     instance_dict[CompareConstant.time_sddip] = time_list
-    instance_dict[CompareConstant.obj_sddip] = obj_list
+    instance_dict[CompareConstant.obj_sddip_iter] = obj_list
     instance_dict[CompareConstant.LB_sddip] = LB_list
     instance_dict[CompareConstant.cuts_sddip] = cuts_array
 
@@ -711,7 +711,7 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
 
     # 比较nocut和sddip的obj，输出到日志中
     # 采样路径，所有obj计算使用相同的路径
-    samples = inference_sddip.get_fw_samples(feat, 50)
+    samples = inference_sddip.get_fw_samples(feat, 1000)
     logger.info("############ nocut 和 sddip obj 比较 ##############")
     logger.info(f"采样路径数：{len(samples)} ")
     logger.info(f"cuts_sddip: {cuts_array}")
@@ -722,6 +722,9 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
     logger.info(f"obj_list_sddip: {obj_list_sddip}")
     logger.info(f"mean obj_nocut: {sum(obj_list_nocut) / len(obj_list_nocut)}")
     logger.info(f"mean obj_sddip: {sum(obj_list_sddip) / len(obj_list_sddip)}")
+    
+    logger.info("打印迭代过程中的obj变化")
+    logger.info(f"obj_sddip_iter: {instance_dict[CompareConstant.obj_sddip_iter]}")
 
 
     return instance_dict

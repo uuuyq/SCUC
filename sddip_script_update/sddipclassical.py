@@ -254,7 +254,8 @@ class Algorithm:
         # 总共执行40次
         while i < max_iterations:
             start_time = time.time()
-            self.SB_lag_iteration(LB_list, i)
+            # self.SB_lag_iteration(LB_list, i)
+            self.SB_iteration(i)
             end_time = time.time()
             time_cost += end_time - start_time
 
@@ -931,7 +932,7 @@ class Algorithm:
                 soc_trial_point = stage_result[3]
                 theta_trial = stage_result[4]
 
-                X_trial = (
+                trial_point = (
                         x_trial_point
                         + y_trial_point
                         + [val for bs in x_bs_trial_point for val in bs]
@@ -941,9 +942,9 @@ class Algorithm:
                 lag_cuts_list = []
                 for n in range(n_realizations):
                     inner_model = self.create_inner_model(t, n, False)
-                    outer_model = self.create_outer_model(X_trial, theta_trial, alpha=1)
+                    outer_model = self.create_outer_model(trial_point, theta_trial, alpha=1)
                     # level bundle methods
-                    pi_star, pi0_star, flag = self.level_bundle_methods(inner_model, outer_model, X_trial,
+                    pi_star, pi0_star, flag = self.level_bundle_methods(inner_model, outer_model, trial_point,
                                                                         theta_trial, 100)
                     if pi0_star == None or pi0_star <= 1e-6 or not flag:
                         continue
@@ -954,13 +955,47 @@ class Algorithm:
                     intercept = inner_model.model.getObjective().getValue()
                     pi = -pi_star / pi0_star
                     intercept = intercept / pi0_star
+
+                    # 使用类似SB的方法，重新计算intercept
+                    dual_model = ucmodelclassical.ClassicalModel(
+                        self.problem_params.n_buses,
+                        self.problem_params.n_lines,
+                        self.problem_params.n_gens,
+                        self.problem_params.n_storages,
+                        self.problem_params.gens_at_bus,
+                        self.problem_params.storages_at_bus,
+                        self.problem_params.backsight_periods,
+                    )
+                    dual_model: ucmodelclassical.ClassicalModel = (
+                        self.add_problem_constraints(dual_model, t, n)
+                    )
+                    dual_model.add_objective(self.problem_params.cost_coeffs)
+
+                    dual_model.calculate_relaxed_terms(
+                        x_trial_point,
+                        y_trial_point,
+                        x_bs_trial_point,
+                        soc_trial_point,
+                    )
+
+                    total_objective = dual_model.objective_terms + gp.quicksum(
+                        dual_model.relaxed_terms[i] * pi[i] for i in range(len(pi))
+                    )
+                    dual_model.model.setObjective(total_objective)
+                    dual_model.model.update()
+                    dual_model.model.optimize()
+                    dual_value = dual_model.model.getObjective().getValue()
+                    intercept = dual_value - np.array(pi) @ np.array(trial_point)
+
+
+
                     lag_cuts_list.append(list(pi) + [intercept])
                 # Calculate and store cut coefficients
                 if len(lag_cuts_list) > 1:
                     lag_cuts_list = np.mean(np.array(lag_cuts_list), axis=0).tolist()
                     # print("lag_average", lag_cuts_list)
                     self.cuts_storage.add(i, k, t - 1, lag_cuts_list)
-                    self.x_storage.add(i, k, t - 1, X_trial)
+                    self.x_storage.add(i, k, t - 1, trial_point)
         self.cut_add_flag = True
         return
 

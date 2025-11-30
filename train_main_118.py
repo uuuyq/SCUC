@@ -8,12 +8,12 @@ from NN_torch_24.config import Config
 def sampled_sddip(trainer):
     num_instances = 3
     num_threads = 3
-    max_iterations = 40
+    max_iterations = 10
 
     data_sampled = trainer.sample_test_dataset(num_instances,
        )
     
-    sddip_fw_n_samples = 1
+    sddip_fw_n_samples = 50
     sddip_timeout_sec = None
     trainer.sampled_sddip(data_sampled, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads)
     
