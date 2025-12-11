@@ -1679,6 +1679,54 @@ class Algorithm:
                 self.logger.info(f"t, piece, cuts: {t - 1}, {piece}, {cuts_predicted_recalculate[(t - 1, piece)]}")
         return cuts_predicted_recalculate
 
+
+    def intercept_recalculate_with_x_multiprocess(self, cuts_predicted, x_array, logger=None):
+        from multiprocessing.dummy import Pool as ThreadPool
+
+
+        num_proc = 15
+
+        x_trial_point_len = len(self.problem_params.init_x_trial_point)
+        y_trial_point_len = len(self.problem_params.init_y_trial_point)
+        n_gens, n_backsight_periods = len(self.problem_params.init_x_bs_trial_point), len(
+            self.problem_params.init_x_bs_trial_point[0])
+        x_bs_trial_point_len = n_gens * n_backsight_periods
+        soc_trial_point_len = len(self.problem_params.init_soc_trial_point)
+
+        n_pieces = cuts_predicted.shape[1]
+        cuts_predicted_recalculate = {}
+
+        for t in reversed(range(1, self.problem_params.n_stages)):
+
+            # ===== 并行 piece =====
+            task_list = []
+            for piece in range(n_pieces):
+                task_list.append((
+                    t, piece,
+                    x_trial_point_len, y_trial_point_len,
+                    x_bs_trial_point_len, soc_trial_point_len,
+                    n_gens, n_backsight_periods,
+                    cuts_predicted, x_array,
+                    self.problem_params,
+                    self.cuts_storage
+                ))
+
+            with ThreadPool(processes=num_proc) as pool:
+                results = pool.map(_worker_piece, task_list)
+            # for arg in task_list:
+            #     _worker_piece(args=arg)
+
+            # ===== 聚合结果（保持你原逻辑顺序）=====
+            for piece, cut_re in results:
+                self.cuts_storage.add(piece, 0, t - 1, cut_re)  # k = 0
+                cuts_predicted_recalculate[(t - 1, piece)] = cut_re
+                self.cut_add_flag = True
+                self.logger.info(
+                    f"t, piece, cuts: {t - 1}, {piece}, {cut_re}"
+                )
+
+        return cuts_predicted_recalculate
+
     def intercept_recalculate(self, cuts_predicted, logger=None):
 
         # TODO: 截距重算应该还能改进，比如采样1阶段得到x，重算1阶段的cut截距，然后可以将cut添加到问题中，
@@ -1863,6 +1911,8 @@ class Algorithm:
                 # 计算的cut应该要添加到问题中，用于下一个阶段的re
                 self.cuts_storage.add(piece, k, t - 1, cut_re)
                 self.cut_add_flag = True
+
+                # 结果收集
                 cuts_predicted_recalculate[(t - 1, piece)] = cut_re
                 self.logger.info(f"t, piece, cuts: {t - 1}, {piece}, {cuts_predicted_recalculate[(t - 1, piece)]}")
         return cuts_predicted_recalculate
@@ -2021,9 +2071,6 @@ class Algorithm:
         # 保存cut x
         self.cuts_storage.save_cut(file_name, self.train_data_path)
         self.x_storage.save_cut(file_name.split("_")[0] + "_x", self.train_data_path)
-
-
-
 
 
     def run_IFR(self, file_name):
@@ -2681,3 +2728,174 @@ class Algorithm:
                 self.x_storage.add(i, k, t - 1, trial_point)
                 # self.logger.info(f"benders_pi_intercept: {benders_cut}")
             self.cut_add_flag = True
+
+
+def _worker_piece(args):
+    """
+    多进程 worker：负责计算某个 (t, piece) 的 intercept 和 cut_re
+    返回 (piece, cut_re)
+    """
+    (
+        t, piece,
+        x_trial_point_len, y_trial_point_len,
+        x_bs_trial_point_len, soc_trial_point_len,
+        n_gens, n_backsight_periods,
+        cuts_predicted, x_array,
+        problem_params,
+        cuts_storage
+    ) = args
+
+
+    cut_add_flag = True
+
+    intercept_list = []
+    n_samples = 1
+    dm = cuts_predicted[t - 1][piece].tolist()
+    for k in range(n_samples):
+        n_realizations = problem_params.n_realizations_per_stage[t]
+
+        # ===== 还原你的原始 trial_point 构造逻辑 =====
+        stage_array = x_array[t - 1, k, :]
+
+        idx = 0
+        x_trial_point = stage_array[idx: idx + x_trial_point_len].tolist()
+        idx += x_trial_point_len
+
+        y_trial_point = stage_array[idx: idx + y_trial_point_len].tolist()
+        idx += y_trial_point_len
+
+        x_bs_flat = stage_array[idx: idx + x_bs_trial_point_len].tolist()
+        idx += x_bs_trial_point_len
+
+        soc_trial_point = stage_array[idx:].tolist()
+
+        # reshape x_bs
+        x_bs_trial_point = []
+        idx_bs = 0
+        for g in range(n_gens):
+            x_bs_trial_point.append(
+                x_bs_flat[idx_bs: idx_bs + n_backsight_periods]
+            )
+            idx_bs += n_backsight_periods
+
+        trial_point = (
+            x_trial_point
+            + y_trial_point
+            + x_bs_flat
+            + soc_trial_point
+        )
+
+        # ===== 正常 realization 循环（不并行）=====
+        for n in range(n_realizations):
+            dual_model = ucmodelclassical.ClassicalModel(
+                problem_params.n_buses,
+                problem_params.n_lines,
+                problem_params.n_gens,
+                problem_params.n_storages,
+                problem_params.gens_at_bus,
+                problem_params.storages_at_bus,
+                problem_params.backsight_periods,
+                lp_relax=False,
+            )
+
+            dual_model.model.setParam("Threads", 1)
+
+            dual_model = add_problem_constraints(
+                problem_params,
+                cut_add_flag,
+                cuts_storage,
+                dual_model, t, n
+            )
+
+
+            dual_model.add_objective(problem_params.cost_coeffs)
+            dual_model.calculate_relaxed_terms(
+                x_trial_point,
+                y_trial_point,
+                x_bs_trial_point,
+                soc_trial_point,
+            )
+
+            total_objective = dual_model.objective_terms + gp.quicksum(
+                dual_model.relaxed_terms[i] * dm[i]
+                for i in range(len(dm))
+            )
+
+            dual_model.model.Params.MIPGap = 2e-4
+            dual_model.model.Params.TimeLimit = 30
+            dual_model.model.setObjective(total_objective)
+            dual_model.model.update()
+            dual_model.model.optimize()
+
+            dual_value = dual_model.model.getObjective().getValue()
+            intercept_k_n = dual_value - np.dot(dm, trial_point)
+            intercept_list.append(intercept_k_n)
+
+    intercept = mean(intercept_list)
+    cut_re = dm + [intercept]
+    return piece, cut_re
+
+
+
+def add_problem_constraints(
+    problem_params,
+    cut_add_flag,
+    cuts_storage,
+    model_builder: ucmodelclassical.ClassicalModel,
+    stage: int,
+    realization: int,
+    # iteration: int,
+) -> ucmodelclassical.ClassicalModel:
+
+    model_builder.add_balance_constraints(
+        sum(problem_params.p_d[stage][realization]),#p_d的阶段从0到num_stage-1,(与scenarios中相差1),数据提取时处理
+        sum(problem_params.re[stage][realization]),
+        problem_params.eff_dc,
+    )
+
+    model_builder.add_power_flow_constraints(
+        problem_params.ptdf,
+        problem_params.pl_max,
+        problem_params.p_d[stage][realization],
+        problem_params.re[stage][realization],
+        problem_params.eff_dc,
+    )
+
+    model_builder.add_storage_constraints(
+        problem_params.rc_max,
+        problem_params.rdc_max,
+        problem_params.soc_max,
+    )
+
+    if stage == problem_params.n_stages - 1:
+        model_builder.add_final_soc_constraints(
+            problem_params.init_soc_trial_point
+        )
+    model_builder.add_soc_transfer(problem_params.eff_c)
+
+    model_builder.add_generator_constraints(
+        problem_params.pg_min, problem_params.pg_max
+    )
+
+    model_builder.add_startup_shutdown_constraints()
+
+    model_builder.add_ramp_rate_constraints(
+        problem_params.r_up,
+        problem_params.r_down,
+        problem_params.r_su,
+        problem_params.r_sd,
+    )
+
+    model_builder.add_up_down_time_constraints(
+        problem_params.min_up_time, problem_params.min_down_time
+    )
+
+    model_builder.add_cut_lower_bound(problem_params.cut_lb[stage])
+
+    if stage < problem_params.n_stages - 1 and cut_add_flag:
+        # 添加cut约束
+        cuts_list = cuts_storage.get_values_by_t(stage)
+        model_builder.add_cut_constrains(
+            cuts_list
+        )
+    return model_builder

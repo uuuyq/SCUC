@@ -322,6 +322,7 @@ class TrainerUpdate:
         print(f"sample_test_dataset start... {num_instances}")
         # 随机选取dataset中的部分数据
         import random
+        random.seed(42)
 
         test_dataset = self.test_dataset
         total = len(test_dataset)
@@ -533,6 +534,9 @@ class TrainerUpdate:
 
                 # 拼接上instance 索引
                 cuts_list.append(cut_value)
+
+            cuts_tensor = torch.tensor(cuts_list)
+            data_instance[CompareConstant.cuts_sddip] = cuts_tensor
 
             # -直接使用训练的cut作为sddip cut
             # data_instance[CompareConstant.cuts_sddip] = data_instance[CompareConstant.cuts_train]

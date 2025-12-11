@@ -25,9 +25,9 @@ def get_prefix_int_list(folder_path):
     return prefix_list
 
 def sampled_sddip(trainer, instance_index_list):
-    num_instances = 30
-    num_threads = 5
-    max_iterations = 30
+    num_instances = 1
+    # num_threads = 5
+    # max_iterations = 30
 
     
 
@@ -44,7 +44,7 @@ def sampled_sddip(trainer, instance_index_list):
 
 def compare_obj(trainer, data_sampled):
     obj_fw_n_samples = 200
-    num_threads = 6
+    num_threads = 1
     max_lag = 5
 
     compare_timeout_sec = None
@@ -80,11 +80,11 @@ def load_result(config, file_name, instance_index_list=None):
 
     all_instances = []
 
-    for file_name in all_files:
+    for file in all_files:
         # 如果需要筛选特定 instance_index
         if instance_index_list is not None:
             # 文件名前缀，例如 '123.0_result.pkl' -> '123'
-            prefix = file_name.split('.')[0]
+            prefix = file.split('.')[0]
             try:
                 idx = int(prefix)
             except ValueError:
@@ -92,7 +92,7 @@ def load_result(config, file_name, instance_index_list=None):
             if idx not in instance_index_list:
                 continue  # 不在筛选列表中就跳过
 
-        file_path = os.path.join(save_path, file_name)
+        file_path = os.path.join(save_path, file)
         instance_dict = torch.load(file_path)
         all_instances.append(instance_dict)
 
@@ -103,31 +103,31 @@ def load_result(config, file_name, instance_index_list=None):
 def main(trainer, config):
     print("config.compare_path: ", config.compare_path)
 
-    trainer.load_dataset()
-
-    trainer.train()
-
-    instance_index_list=None
+    # trainer.load_dataset()
+    #
+    # trainer.train()
+    #
+    # instance_index_list=None
 
     # instance_index_list = get_prefix_int_list(os.path.join(config.compare_path, "compare_obj_result"))
     # print(f"已经存在的数据instance index: {instance_index_list}")
-
-    data_sampled_sddip = sampled_sddip(trainer, instance_index_list)
-    if data_sampled_sddip is None:
-        data_sampled_sddip = load_result(config, "sddip_result")
-    compare_obj(trainer, data_sampled_sddip)
-
-
-    # print("start compare_obj_stage")
-    # data_sampled = load_result(config, "compare_obj_result", instance_index_list=[1627])
-    # compare_obj_stage(trainer, data_sampled, fw_n_samples=200)
+    #
+    # data_sampled_sddip = sampled_sddip(trainer, instance_index_list)
+    # # if data_sampled_sddip is None:
+    # #     data_sampled_sddip = load_result(config, "sddip_result")
+    # compare_obj(trainer, data_sampled_sddip)
 
 
+    print("start compare_obj_stage")
+    data_sampled = load_result(config, "compare_obj_result")
+    compare_obj_stage(trainer, data_sampled, fw_n_samples=200)
 
 
-    print("start compare_LB")
-    data_sampled_sddip = load_result(config, "compare_obj_result", )
-    compare_LB(trainer, data_sampled_sddip)
+
+
+    # print("start compare_LB")
+    # data_sampled_sddip = load_result(config, "compare_obj_result", )
+    # compare_LB(trainer, data_sampled_sddip)
 
 if __name__ == '__main__':
     ROOT = Path(__file__).parent.resolve()  # 项目根目录
