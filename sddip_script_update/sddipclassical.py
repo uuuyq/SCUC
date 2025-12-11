@@ -83,7 +83,7 @@ class Algorithm:
             self.problem_params.n_realizations_per_stage[1],
         )
         self.n_samples_primary = 3  # benders前向过程采样的场景路径数
-        self.n_samples_secondary = 1  # lag采样的场景路径数
+        self.n_samples_secondary = 3  # lag采样的场景路径数
 
     def run(self, file_name):
         self.logger.info("#### SDDiP-Algorithm started ####")
@@ -108,7 +108,7 @@ class Algorithm:
             i += 1
             sb_count += 1
         # 总共执行不超过30次
-        while i < 20:
+        while i < 35:
             # 优先使用SB
             v_lower, obj_mean, v_upper_l, v_upper_r = self.SB_lag_iteration(LB_list, i)
             obj_list.append(obj_mean)
@@ -251,11 +251,10 @@ class Algorithm:
         LB_list.append(v_lower)
 
         i = 0  # 全局迭代计数器
-        # 总共执行40次
         while i < max_iterations:
             start_time = time.time()
-            # self.SB_lag_iteration(LB_list, i)
-            self.SB_iteration(i)
+            self.SB_lag_iteration(LB_list, i)
+            # self.SB_iteration(i)
             end_time = time.time()
             time_cost += end_time - start_time
 
@@ -343,53 +342,49 @@ class Algorithm:
 
     def SB_lag_iteration(self, LB_list, index):
 
-        enable_permanent_switch = False  # 关闭
+        enable_permanent_switch = False  # 开启永久切换
 
-
-        # 初始化计数器（只在第一次调用时）
+        # 初始化
         if not hasattr(self, "primary_no_improve_count"):
             self.primary_no_improve_count = 0
+        if not hasattr(self, "primary_no_improve_limit"):
+            self.primary_no_improve_limit = 3
 
-        # 检查 LB 是否改善
-        no_improvement_condition = False
+        # 判断 LB 是否改善
         if len(LB_list) > 1:
             delta = (LB_list[-1] - LB_list[-2]) / (abs(LB_list[-2]) + 1e-8)
-            no_improvement_condition = delta <= self.relative_tolerance
+            no_improvement = delta <= self.relative_tolerance
+        else:
+            no_improvement = False
 
-        # -------- 新增逻辑：primary模式下出现无改善，计数次数 --------
-        if self.current_cut_mode == self.primary_cut_mode:
-            if no_improvement_condition:
+        # ==========（1）动态切换逻辑（SB ↔ LAG 正常切换）==========
+        if self.current_cut_mode == self.primary_cut_mode:  
+            # 当前在 SB
+            if no_improvement:
+                self.current_cut_mode = self.secondary_cut_mode  # 切到 LAG
+            # 统计 SB 下连续无改善次数
+            if no_improvement:
                 self.primary_no_improve_count += 1
             else:
                 self.primary_no_improve_count = 0
 
-        # 设定一个阈值，例如连续 5 次无改善就放弃 primary
-        if not hasattr(self, "primary_no_improve_limit"):
-            self.primary_no_improve_limit = 3
-
-        # -------------------------------------------------------
-        # A) 开启永久切换：达到 limit → 永久切到 secondary
-        # -------------------------------------------------------
-        if enable_permanent_switch:
-            if self.primary_no_improve_count >= self.primary_no_improve_limit:
-                self.logger.info("##########永久切换至 lag 模式#########")
-                self.current_cut_mode = self.secondary_cut_mode
         else:
-            # -------------------------------------------------------
-            # B) 未开启永久切换 → 使用原来的动态切换逻辑
-            # -------------------------------------------------------
-            if self.current_cut_mode == self.secondary_cut_mode:
-                self.current_cut_mode = self.primary_cut_mode
-            elif no_improvement_condition:
-                self.current_cut_mode = self.secondary_cut_mode
+            # 当前在 LAG: 下一轮一定切回 SB
+            self.current_cut_mode = self.primary_cut_mode
 
-        # ---------------- 实际调用 ----------------
+
+        # ==========（2）永久切换逻辑（只阻止回到 SB）==========
+        if enable_permanent_switch and self.primary_no_improve_count >= self.primary_no_improve_limit:
+            self.logger.info("########## fix LAG #########")
+            self.current_cut_mode = self.secondary_cut_mode
+
+
+        # ==========（3）执行对应模式 ==========
         if self.current_cut_mode == self.primary_cut_mode:
             return self.SB_iteration(index)
-        elif self.current_cut_mode == self.secondary_cut_mode:
-            return self.lag_iteration(index)
         else:
-            raise ValueError("self.current_cut_mode 出错")
+            return self.lag_iteration(index)
+
 
 
 
@@ -956,36 +951,36 @@ class Algorithm:
                     pi = -pi_star / pi0_star
                     intercept = intercept / pi0_star
 
-                    # 使用类似SB的方法，重新计算intercept
-                    dual_model = ucmodelclassical.ClassicalModel(
-                        self.problem_params.n_buses,
-                        self.problem_params.n_lines,
-                        self.problem_params.n_gens,
-                        self.problem_params.n_storages,
-                        self.problem_params.gens_at_bus,
-                        self.problem_params.storages_at_bus,
-                        self.problem_params.backsight_periods,
-                    )
-                    dual_model: ucmodelclassical.ClassicalModel = (
-                        self.add_problem_constraints(dual_model, t, n)
-                    )
-                    dual_model.add_objective(self.problem_params.cost_coeffs)
+                    # # 使用类似SB的方法，重新计算intercept
+                    # dual_model = ucmodelclassical.ClassicalModel(
+                    #     self.problem_params.n_buses,
+                    #     self.problem_params.n_lines,
+                    #     self.problem_params.n_gens,
+                    #     self.problem_params.n_storages,
+                    #     self.problem_params.gens_at_bus,
+                    #     self.problem_params.storages_at_bus,
+                    #     self.problem_params.backsight_periods,
+                    # )
+                    # dual_model: ucmodelclassical.ClassicalModel = (
+                    #     self.add_problem_constraints(dual_model, t, n)
+                    # )
+                    # dual_model.add_objective(self.problem_params.cost_coeffs)
 
-                    dual_model.calculate_relaxed_terms(
-                        x_trial_point,
-                        y_trial_point,
-                        x_bs_trial_point,
-                        soc_trial_point,
-                    )
+                    # dual_model.calculate_relaxed_terms(
+                    #     x_trial_point,
+                    #     y_trial_point,
+                    #     x_bs_trial_point,
+                    #     soc_trial_point,
+                    # )
 
-                    total_objective = dual_model.objective_terms + gp.quicksum(
-                        dual_model.relaxed_terms[i] * pi[i] for i in range(len(pi))
-                    )
-                    dual_model.model.setObjective(total_objective)
-                    dual_model.model.update()
-                    dual_model.model.optimize()
-                    dual_value = dual_model.model.getObjective().getValue()
-                    intercept = dual_value - np.array(pi) @ np.array(trial_point)
+                    # total_objective = dual_model.objective_terms + gp.quicksum(
+                    #     dual_model.relaxed_terms[i] * pi[i] for i in range(len(pi))
+                    # )
+                    # dual_model.model.setObjective(total_objective)
+                    # dual_model.model.update()
+                    # dual_model.model.optimize()
+                    # dual_value = dual_model.model.getObjective().getValue()
+                    # intercept = dual_value - np.array(pi) @ np.array(trial_point)
 
 
 
@@ -1223,7 +1218,7 @@ class Algorithm:
                     r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\sddip_result\inner_model.mps")  # 将不可行的约束写入文件
                 if inner_model.model.status == gp.GRB.UNBOUNDED:
                     self.logger.info("Model is unbounded. Unbounded ray:")
-                    self.logger.info(inner_model.model.unbdRay)
+                    # self.logger.info(inner_model.model.unbdRay)
 
                 break
 

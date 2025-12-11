@@ -86,7 +86,7 @@ def proc(num_cuts, train_data_path, force_recalculate_flag=False):
     pkl_file_name = f"cut_processed_pkl_15_prefix"
     csv_file_name = f"cut_processed_csv_15_prefix"
 
-    for i in range(2800, 4060):
+    for i in range(0, 1000):
         cut_file = path / f"{i + 1}_cuts.pkl"
         x_file = path / f"{i + 1}_x.pkl"
 
@@ -146,7 +146,7 @@ if __name__ == "__main__":
     收集指定数量的cuts和x
     """
     num_cuts = 15  # 指定cuts数量
-    train_data_path = pathlib.Path(r"../data_gen_24_bus118/train_data")  # 原始cut地址
+    train_data_path = pathlib.Path(r"../data_gen_24_bus6_CV/train_data")  # 原始cut地址
 
     proc(num_cuts, train_data_path)
 

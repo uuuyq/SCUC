@@ -13,6 +13,8 @@ from NN_torch_24.model import NN_Model
 from NN_torch_24.infer import Infer
 from NN_torch_24.constant import CompareConstant
 import logging
+import pickle
+import numpy as np
 
 class TrainerUpdate:
     """
@@ -79,6 +81,12 @@ class TrainerUpdate:
         if self.config.standard_flag:
             print("cut_mean: ", self.cut_mean)
             print("cut_std: ", self.cut_std)
+        
+
+        # 回收dataset内存
+        del data_set
+        import gc
+        gc.collect()
 
 
         # print(len(data_set))
@@ -93,7 +101,7 @@ class TrainerUpdate:
         model_path = os.path.join(self.config.result_path, "model", f"model_{self.params_name}.pth")
         if os.path.exists(loss_path):
             print(f"model 存在，load model: {model_path}")
-            self._load_model()
+            # self._load_model()
             return
 
         model = NN_Model(self.config.num_stage, self.config.hidden_arr, self.config.n_vars, self.config.n_pieces)
@@ -306,68 +314,6 @@ class TrainerUpdate:
         x_array = inference_sddip.calculate_x(feat, self.config.n_pieces)
         return x_array
 
-    def sample_test_dataset_quick(self, num_instances):
-        """
-        选取test_data中的部分数据
-        """
-
-        save_path = os.path.join(self.config.compare_path, f"num-{num_instances}_sampled_fixed.pkl")
-        if os.path.exists(save_path):
-            print(f"{save_path} 已存在，直接返回")
-            with open(save_path, "rb") as f:
-                data_sampled = torch.load(f)
-            return data_sampled
-
-        print("sample_test_dataset start...")
-        # 随机选取dataset中的部分数据
-        import random
-        random.seed(43)
-
-        test_dataset = self.test_dataset
-        total = len(test_dataset)
-
-        # 找到 instance_index < 3000 的所有可选索引  下面限制的数据才有训练时的obj和time
-        eligible_indices = []
-        for idx in range(total):
-            feat, scenario, cut, x = test_dataset[idx]
-            instance_index = feat[0][0].item() if isinstance(feat[0][0], torch.Tensor) else feat[0][0]
-            if instance_index <= 1000 or instance_index > 1500 and instance_index <= 3000:
-                eligible_indices.append(idx)
-
-
-        num_samples = min(num_instances, len(eligible_indices))
-
-        # 抽取
-        sampled_indices = random.sample(eligible_indices, num_samples)
-        test_dataset_sampled = Subset(test_dataset, sampled_indices)
-        print("test_dataset_sampled", len(test_dataset_sampled))
-        # 将数据合并到一个dict中
-
-        data_sampled = []  # ← 从 dict[list] 改为 list[dict]
-
-        for i in range(len(test_dataset_sampled)):
-            feat, scenario, cut, x = test_dataset_sampled[i]
-
-            # 保证 在 CPU，可以安全传多进程
-            feat = feat.detach().cpu().numpy().copy()
-            scenario = scenario.detach().cpu().numpy().copy()
-            cut = cut.detach().cpu().numpy().copy()
-            x = x.detach().cpu().numpy().copy()
-
-            instance_index = feat[0][0]
-
-            # 组装一个 dict，加入 list
-            data_sampled.append({
-                CompareConstant.instance_index: instance_index,
-                CompareConstant.feat: feat,
-                CompareConstant.scenario: scenario,
-                CompareConstant.cuts_train: cut,
-                CompareConstant.x_train: x,
-            })
-
-        torch.save(data_sampled, save_path)
-
-        return data_sampled
 
     def sample_test_dataset(self, num_instances, instance_index_list=None):
         """
@@ -387,7 +333,10 @@ class TrainerUpdate:
             feat, scenario, cut, x = test_dataset[idx]
             instance_index = feat[0][0].item() if isinstance(feat[0][0], torch.Tensor) else feat[0][0]
             instance_index = int(instance_index)
-            if instance_index_list is not None and instance_index in instance_index_list:
+            # 6 规则
+            if instance_index >= 500 or instance_index_list is not None and instance_index in instance_index_list:
+            # 118 规则
+            # if instance_index >= 1000 and instance_index <= 1500 or instance_index_list is not None and instance_index in instance_index_list:
                 continue
             else:
                 eligible_indices.append(idx)
@@ -430,59 +379,6 @@ class TrainerUpdate:
 
         return data_sampled
 
-    def sampled_read(self, data_sampled):
-        """
-        sddip太慢了，简单读取生成数据时的obj和time看一下
-        :return:
-        """
-        num_instances = len(data_sampled)
-        save_path = os.path.join(self.config.compare_path, f"num-{num_instances}_sampled_read.pkl")
-        if os.path.exists(save_path):
-            print(f"{save_path} 已存在，直接返回")
-            with open(save_path, "rb") as f:
-                data_sampled = torch.load(f)
-            return data_sampled
-
-        # 读取生成数据是的obj和time
-        time_path = r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\data_gen_24_bus118\train_data\time.txt"
-        obj_path_root = r"D:\tools\workspace_pycharm\sddip-SCUC-6-24\data_gen_24_bus118\train_data\LB_obj_list"
-
-        # 读取 time 文件，存到字典
-        time_dict = {}
-        with open(time_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                # line 格式: "1_cuts : 10329.487878084183 seconds"
-                parts = line.split(":")
-                index_str = parts[0].replace("_cuts", "").strip()
-                time_val = float(parts[1].replace("seconds", "").strip())
-                time_dict[int(index_str)] = time_val
-
-        # 存储结果
-        for data_instance in data_sampled:
-            feat = data_instance[CompareConstant.feat]
-            instance_index = int(feat[0][0])
-
-            # 读取 obj 文件
-            obj_path = os.path.join(obj_path_root, f"{instance_index}_cuts_obj.txt")
-            with open(obj_path, "r") as f_obj:
-                lines = f_obj.readlines()
-                last_obj = float(lines[-1].strip())  # 取最后一个数
-
-            data_instance[CompareConstant.obj_sddip_read] = last_obj
-
-            # 取对应时间
-            if instance_index in time_dict:
-                data_instance[CompareConstant.time_sddip_read] = time_dict[instance_index]
-            else:
-                data_instance[CompareConstant.time_sddip_read] = None  # 若 time 文件中没有对应 index
-
-        torch.save(data_sampled, save_path)
-
-        return data_sampled
-
     def _get_pred_cuts(self, data_sampled):
         """
         获取pred_cuts，记录推理耗时
@@ -517,12 +413,26 @@ class TrainerUpdate:
             sample[CompareConstant.time_pred] = end - start
             sample[CompareConstant.cuts_pred] = pred_cuts.detach().cpu().numpy().copy()  # 转换成array
             sample[CompareConstant.x_pred] = x_array
+        
+        # 回收model内存
+        del model
+        torch.cuda.empty_cache()   # 如果在 GPU 上
 
         torch.save(data_sampled, save_path)
+
+
         return data_sampled
 
 
     def sampled_sddip(self, data_sampled, sddip_fw_n_samples, max_iterations, sddip_timeout_sec, num_threads):
+
+        # 回收数据和model参数内存
+        del self.train_dataset
+        del self.val_dataset
+        del self.test_dataset
+        import gc
+        gc.collect()
+
         # 创建保存结果的文件夹
         if self.config.compare_path is None:
             raise Exception("compare_path is None 需要设置compare_path为测试结果保存的位置")
@@ -540,6 +450,130 @@ class TrainerUpdate:
                        )
         multi_process(func, num_workers, data_sampled, sddip_timeout_sec)
         print("Parallel sddip complete.")
+
+    def sampled_sddip_read(self, data_sampled):
+        """
+        读取sddip time、LB、Cuts，obj还是要重新算的
+        """
+        # 回收数据和model参数内存
+        del self.train_dataset
+        del self.val_dataset
+        del self.test_dataset
+        import gc
+        gc.collect()
+
+        # 创建保存结果的文件夹
+        if self.config.compare_path is None:
+            raise Exception("compare_path is None 需要设置compare_path为测试结果保存的位置")
+        os.makedirs(self.config.compare_path, exist_ok=True)
+
+        # res_dir = os.path.join(self.config.compare_path, f"sddip_results")  # 日志保存位置
+        # os.makedirs(res_dir, exist_ok=True)
+
+        
+        num_instances = len(data_sampled)
+        save_path = os.path.join(self.config.compare_path, f"num-{num_instances}_sampled_read.pkl")
+        if os.path.exists(save_path):
+            print(f"{save_path} 已存在，直接返回")
+            with open(save_path, "rb") as f:
+                data_sampled = torch.load(f)
+            return data_sampled
+
+        # 读取生成数据是的obj和time
+        time_path = os.path.join(self.config.train_data_path, r"time.txt")
+        LB_path = os.path.join(self.config.train_data_path, r"LB_obj_list")
+        cuts_path = os.path.join(self.config.train_data_path, r"cut_processed_pkl_15_prefix")
+        # 读取 time 文件，存到字典
+        time_dict = {}
+        with open(time_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                # line 格式: "1_cuts : 10329.487878084183 seconds"
+                parts = line.split(":")
+                index_str = parts[0].replace("_cuts", "").strip()
+                time_val = float(parts[1].replace("seconds", "").strip())
+                time_dict[int(index_str)] = time_val
+
+        # 存储结果
+        for data_instance in data_sampled:
+            feat = data_instance[CompareConstant.feat]
+            instance_index = int(feat[0][0])
+
+            # 读取 obj 文件
+            LB_file_path = os.path.join(LB_path, f"{instance_index}_cuts_LB.txt")
+            LB_list = []
+            with open(LB_file_path, "r") as f:
+                for line in f:
+                    line = line.strip()
+                    if line:                      # 跳过空行
+                        LB_list.append(float(line))
+
+
+            data_instance[CompareConstant.LB_sddip] = LB_list
+
+            # 取对应时间
+            if instance_index in time_dict:
+                data_instance[CompareConstant.time_sddip] = time_dict[instance_index]
+            else:
+                data_instance[CompareConstant.time_sddip] = None  # 若 time 文件中没有对应 index
+
+            # -获取sddip的所有cut
+            cuts_file_path =  os.path.join(cuts_path, f"{instance_index}_cuts.pkl")
+            with open(cuts_file_path, "rb") as file:
+                cuts_df = pickle.load(file)
+            cuts_list = []
+            for t in range(self.config.num_stage - 1):
+
+                # value: cuts  <class 'numpy.ndarray'>
+                cut_value = cuts_df[cuts_df["t"] == t]["value"].iloc[0]
+
+                cut_value = np.round(cut_value, 4)  # <<< 保留四位小数
+
+                # 拼接上instance 索引
+                cuts_list.append(cut_value)
+
+            # -直接使用训练的cut作为sddip cut
+            # data_instance[CompareConstant.cuts_sddip] = data_instance[CompareConstant.cuts_train]
+
+        return data_sampled
+    
+    def compare_obj_stage(self, data_sampled_list, fw_n_samples):
+
+        result_path = os.path.join(self.config.compare_path, "compare_obj_stage_result")
+        os.makedirs(result_path, exist_ok=True)
+
+        infer = Infer(
+            n_stages=self.config.num_stage,
+            n_realizations=self.config.n_realizations,
+            N_VARS=self.config.n_vars,
+            train_data_path=self.config.train_data_path,
+            result_path=self.config.result_path
+        )
+
+        # === 计算分阶段的obj ===
+        for data_sampled in data_sampled_list:
+            instance_index = data_sampled[CompareConstant.instance_index]
+            feat = data_sampled[CompareConstant.feat]
+            samples = infer.get_fw_samples(feat, fw_n_samples)
+
+            cuts_sddip = data_sampled[CompareConstant.cuts_sddip]
+            data_sampled[CompareConstant.obj_sddip_stage] = infer.forward_obj_calculate_stage(feat, samples, cuts_sddip)
+
+            cuts_pred = data_sampled[CompareConstant.cuts_pred]
+            data_sampled[CompareConstant.obj_pred_stage] = infer.forward_obj_calculate_stage(feat, samples, cuts_pred)
+
+            cuts_pred_re = data_sampled[CompareConstant.cuts_pred_re]
+            data_sampled[CompareConstant.obj_pred_re_stage] = infer.forward_obj_calculate_stage(feat, samples, cuts_pred_re)
+
+            file_name = f"{instance_index}_result.pkl"
+            torch.save(data_sampled, os.path.join(result_path, file_name))
+
+
+
+
+
 
     def compare_obj_multiprocess(self, data_sampled_sddip, obj_fw_n_samples, max_lag, compare_timeout_sec, num_threads):
         """
@@ -587,45 +621,7 @@ class TrainerUpdate:
         print("Parallel comparison complete.")
         return
 
-    def compare_quick(self, num_instances, fw_n_samples, max_lag,
-                         compare_timeout_sec, num_threads):
-        """
-        使用多进程方式比较时间和obj。
-        注意：如果CPU紧张，pred或re的耗时可能会略有上升。
-        """
-        # 创建保存结果的文件夹
-        if self.config.compare_path is None:
-            raise Exception("compare_path is None 需要设置compare_path为测试结果保存的位置")
-
-        os.makedirs(self.config.compare_path, exist_ok=True)
-
-        # 内部判断是否已经存在
-        data_sampled = self.sample_test_dataset_quick(num_instances)
-        data_sampled = self.sampled_read(data_sampled)
-        data_sampled = self._get_pred_cuts(data_sampled)
-
-        print("输出data_sampled：")
-        print(data_sampled)
-
-
-        num_workers = min(mp.cpu_count(), num_threads)  # 限制最大并行数，防止CPU爆满
-        print(f"compare: using {num_workers} processes for parallel...")
-        func = partial(_process_instance_quick,
-                       fw_n_samples=fw_n_samples,
-                       max_lag=max_lag,
-                       config=self.config,
-                       log_path=self.config.compare_path)
-
-        multi_process(func, num_workers, data_sampled, compare_timeout_sec)
-
-        # 保存原始结果
-        # torch.save(compare_result, os.path.join(self.config.compare_path,
-        #                                         f"num-{num_instances}_compare_result_fw-{fw_n_samples}.pkl"))
-        print("Parallel comparison complete.")
-        return
-    
-    
-import psutil 
+import psutil
 def set_high_priority():
     """提升当前进程为高优先级（Windows）"""
     p = psutil.Process(os.getpid())
@@ -711,17 +707,17 @@ def _process_sddip(index, instance_dict, sddip_fw_n_samples, config, max_iterati
 
     # 比较nocut和sddip的obj，输出到日志中
     # 采样路径，所有obj计算使用相同的路径
-    samples = inference_sddip.get_fw_samples(feat, 1000)
-    logger.info("############ nocut 和 sddip obj 比较 ##############")
-    logger.info(f"采样路径数：{len(samples)} ")
-    logger.info(f"cuts_sddip: {cuts_array}")
-    # nocut pred pred_re 对应的obj
-    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
-    obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_array)
-    logger.info(f"obj_list_nocut: {obj_list_nocut}")
-    logger.info(f"obj_list_sddip: {obj_list_sddip}")
-    logger.info(f"mean obj_nocut: {sum(obj_list_nocut) / len(obj_list_nocut)}")
-    logger.info(f"mean obj_sddip: {sum(obj_list_sddip) / len(obj_list_sddip)}")
+    # samples = inference_sddip.get_fw_samples(feat, 1000)
+    # logger.info("############ nocut 和 sddip obj 比较 ##############")
+    # logger.info(f"采样路径数：{len(samples)} ")
+    # logger.info(f"cuts_sddip: {cuts_array}")
+
+    # obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
+    # obj_list_sddip = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_array)
+    # logger.info(f"obj_list_nocut: {obj_list_nocut}")
+    # logger.info(f"obj_list_sddip: {obj_list_sddip}")
+    # logger.info(f"mean obj_nocut: {sum(obj_list_nocut) / len(obj_list_nocut)}")
+    # logger.info(f"mean obj_sddip: {sum(obj_list_sddip) / len(obj_list_sddip)}")
     
     logger.info("打印迭代过程中的obj变化")
     logger.info(f"obj_sddip_iter: {instance_dict[CompareConstant.obj_sddip_iter]}")
@@ -832,6 +828,12 @@ def _process_obj(index, instance_dict, obj_fw_n_samples, max_lag, config):
                                                                          + instance_dict[CompareConstant.time_pred_re])
             instance_dict[CompareConstant.obj_pred_sddip_list[i]] = obj_list_pred
             instance_dict[CompareConstant.obj_pred_re_sddip_list[i]] = obj_list_pred_re
+
+            logger.info(f"time_pred_sddip_list: {instance_dict[CompareConstant.time_pred_sddip_list[i]]}")
+            logger.info(f"time_pred_re_sddip_list: {instance_dict[CompareConstant.time_pred_re_sddip_list[i]]}")
+            logger.info(f"obj_pred_sddip_list: {instance_dict[CompareConstant.obj_pred_sddip_list[i]]}")
+            logger.info(f"obj_pred_re_sddip_list: {instance_dict[CompareConstant.obj_pred_re_sddip_list[i]]}")
+
     logger.info(f"Process {index} done.")
 
     save_path = os.path.join(config.compare_path, "compare_obj_result") 
@@ -877,6 +879,22 @@ def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config
     )
 
     feat = instance_dict[CompareConstant.feat]
+    logger.info(f"feat: {feat}")
+
+    logger.info("##########sddip start##############")
+    time_list, obj_list, LB_list, cuts_array = calculate_obj_with_sddip_iteration(
+        inference_sddip=inference_sddip,
+        feat=feat,
+        cuts=None,
+        fw_n_samples=sddip_fw_n_samples,
+        additional_time=0,  # sddip没有额外的时间
+        max_iterations=max_iterations,
+        logger=logger,
+    )
+
+    instance_dict[CompareConstant.time_sddip] = time_list
+    instance_dict[CompareConstant.obj_sddip_iter] = obj_list
+    instance_dict[CompareConstant.LB_sddip] = LB_list
 
     # pred
     logger.info("##########pred sddip start##############")
@@ -912,92 +930,6 @@ def _process_LB(index, instance_dict, sddip_fw_n_samples, max_iterations, config
 
     return instance_dict
 
-
-
-
-def _process_instance_quick(instance_index, instance_dict, fw_n_samples, max_lag, config, log_path):
-    # === 每个进程单独日志 ===
-    log_dir = os.path.join(log_path, "compare_logs")
-    os.makedirs(log_dir, exist_ok=True)
-    log_file = os.path.join(log_dir, f"process_{instance_index}.log")
-    # 清空旧日志处理器
-    for h in logging.root.handlers[:]:
-        logging.root.removeHandler(h)
-    logging.basicConfig(
-        level=logging.INFO,
-        format=f"[%(asctime)s][Process {instance_index}][%(levelname)s] %(message)s",
-        handlers=[
-            logging.FileHandler(log_file, mode='w', encoding='utf-8'),
-            # logging.StreamHandler()  # 若希望仍打印到控制台可加这一行
-        ]
-    )
-    logger = logging.getLogger(__name__)
-    logger.info(f"Process {instance_index} start")
-
-    # === 正式计算 ===
-    inference_sddip = Infer(
-        n_stages=config.num_stage,
-        n_realizations=config.n_realizations,
-        N_VARS=config.n_vars,
-        train_data_path=config.train_data_path,
-        result_path=config.result_path
-    )
-
-    feat = instance_dict[CompareConstant.feat]
-    cuts_pred = instance_dict[CompareConstant.cuts_pred]
-    x_pred = instance_dict[CompareConstant.x_pred]
-    logger.info(f"cuts_pred.shape: {cuts_pred.shape}")
-    logger.info(cuts_pred)
-
-    """不知道什么原因，recalculate在有些样本中耗时很长，控制运行时长，超时直接舍弃该样本返回"""
-    logger.info("Start recalculate cuts...")
-    logger.info("re需要的参数：")
-    logger.info(f"feat.device: {feat.device}")
-    logger.info(f"cuts_pred.device: {cuts_pred.device}")
-    logger.info(f"x_pred.device: {x_pred.device}")
-    # 直接在dual model求解中限制求解时间和精度
-    cuts_pred_re, recalculate_time = _recalculate_cuts(feat, cuts_pred, x_pred, inference_sddip, logger)
-
-    # re结果保存
-    logger.info("re正常完成，保存到dict中...")
-    instance_dict[CompareConstant.recalculate_time] = recalculate_time
-    instance_dict[CompareConstant.time_pred_re] = instance_dict[CompareConstant.time_pred] + recalculate_time
-    instance_dict[CompareConstant.cuts_pred_re] = cuts_pred_re
-
-    logger.info("Start calculate obj with (no_cuts, cuts_pred, cuts_pred_re)")
-    # 采样路径，所有obj计算使用相同的路径
-    samples = inference_sddip.get_fw_samples(feat, fw_n_samples)
-    # nocut pred pred_re 对应的obj
-    obj_list_nocut = inference_sddip.forward_obj_calculate(feat, samples, cuts=None)
-    obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_pred)
-    obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts=cuts_pred_re)
-
-    # obj结果保存
-    logger.info("calculate obj完成，保存到dict中...")
-    instance_dict[CompareConstant.obj_nocut] = obj_list_nocut
-    instance_dict[CompareConstant.obj_pred] = obj_list_pred
-    instance_dict[CompareConstant.obj_pred_re] = obj_list_pred_re
-
-    # 进一步执行sddip
-    if max_lag > 0:
-        lag_time_list, lag_obj_list, lag_cuts_list, lag_time_list_re, lag_obj_list_re, lag_cuts_list_re = (
-            _pred_sddip(inference_sddip, feat, cuts_pred, cuts_pred_re, max_lag, logger))
-        # 计算对应的obj
-        for i in range(max_lag):
-            logger.info(f"Start calculate obj with additional_sddip_cuts: {i} max_lag: {max_lag}")
-
-            obj_list_pred = inference_sddip.forward_obj_calculate(feat, samples, cuts=lag_cuts_list[i])
-            obj_list_pred_re = inference_sddip.forward_obj_calculate(feat, samples, cuts=lag_cuts_list_re[i])
-
-            instance_dict[CompareConstant.time_pred_sddip_list[i]] = (lag_time_list[i]
-                                                                      + instance_dict[CompareConstant.time_pred])
-            instance_dict[CompareConstant.time_pred_re_sddip_list[i]] = (lag_time_list_re[i]
-                                                                    + instance_dict[CompareConstant.time_pred_re])
-            instance_dict[CompareConstant.obj_pred_sddip_list[i]] = obj_list_pred
-            instance_dict[CompareConstant.obj_pred_re_sddip_list[i]] = obj_list_pred_re
-
-    logger.info(f"Process {instance_index} done.")
-    return instance_dict
 
 def _recalculate_cuts(feat, cuts_pred, x_array, inference_sddip, logger):
     """

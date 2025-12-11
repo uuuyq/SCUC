@@ -25,8 +25,8 @@ def get_prefix_int_list(folder_path):
     return prefix_list
 
 def sampled_sddip(trainer, instance_index_list):
-    num_instances = 6
-    num_threads = 6
+    num_instances = 30
+    num_threads = 5
     max_iterations = 30
 
     
@@ -34,8 +34,8 @@ def sampled_sddip(trainer, instance_index_list):
     data_sampled = trainer.sample_test_dataset(num_instances, instance_index_list
        )
     
-    sddip_fw_n_samples = 1
-    sddip_timeout_sec = None
+    # sddip_fw_n_samples = 1
+    # sddip_timeout_sec = None
 
     #  只是读取
     return trainer.sampled_sddip_read(data_sampled)
@@ -52,7 +52,7 @@ def compare_obj(trainer, data_sampled):
 
 def compare_LB(trainer, data_sampled):
     num_instances = 6 
-    num_threads = 3
+    num_threads = 6
     sddip_fw_n_samples = 1  # 重点在LB，因此计算obj的采样次数可以选择少一些，而如果obj也需要的话，需要增大采样次数
     max_iterations = 25  # 太多也没有必要
 
@@ -103,50 +103,52 @@ def load_result(config, file_name, instance_index_list=None):
 def main(trainer, config):
     print("config.compare_path: ", config.compare_path)
 
-    # trainer.load_dataset()
+    trainer.load_dataset()
 
-    # trainer.train()
+    trainer.train()
+
+    instance_index_list=None
 
     # instance_index_list = get_prefix_int_list(os.path.join(config.compare_path, "compare_obj_result"))
-    #
     # print(f"已经存在的数据instance index: {instance_index_list}")
 
-    # data_sampled_sddip = sampled_sddip(trainer, instance_index_list)
-    # if data_sampled_sddip is None:
-    #     data_sampled_sddip = load_result(config, "sddip_result")
-    # compare_obj(trainer, data_sampled_sddip)
+    data_sampled_sddip = sampled_sddip(trainer, instance_index_list)
+    if data_sampled_sddip is None:
+        data_sampled_sddip = load_result(config, "sddip_result")
+    compare_obj(trainer, data_sampled_sddip)
 
 
-    print("start compare_obj_stage")
-    data_sampled = load_result(config, "compare_obj_result", instance_index_list=[1627])
-    compare_obj_stage(trainer, data_sampled, fw_n_samples=200)
+    # print("start compare_obj_stage")
+    # data_sampled = load_result(config, "compare_obj_result", instance_index_list=[1627])
+    # compare_obj_stage(trainer, data_sampled, fw_n_samples=200)
 
 
 
 
-    # print("start compare_LB")
-    # data_sampled_sddip = load_result(config, "compare_obj_result", )
-    # compare_LB(trainer, data_sampled_sddip)
+    print("start compare_LB")
+    data_sampled_sddip = load_result(config, "compare_obj_result", )
+    compare_LB(trainer, data_sampled_sddip)
 
 if __name__ == '__main__':
     ROOT = Path(__file__).parent.resolve()  # 项目根目录
-    train_data_path = ROOT / "data_gen_24_bus118" / "train_data"
-    tensor_data_path = ROOT / "NN_torch_24" / "tensor_118"
-    result_path = ROOT / "NN_torch_24" / "result_118_11"
+    train_data_path = ROOT / "data_gen_24_bus6_CV" / "train_data"
+    tensor_data_path = ROOT / "NN_torch_24" / "tensor_6_CV"
+    result_path = ROOT / "NN_torch_24" / "result_6_CV"
     hidden_arr = (1024, 1024)
-    gamma = 1e12
+    gamma = 1e8
     standard_flag = True
+
     config = Config(
-        num_data=3000,
+        num_data=1000,
         num_stage=24,
-        n_vars=378,
-        feat_dim=238,  # instance_index, stage, feat(118 * 2)
-        single_cut_dim=379,
+        n_vars=13,
+        feat_dim=14,  # instance_index, stage, feat(6 * 2)
+        single_cut_dim=14,
         n_pieces=15,
         train_data_path=train_data_path,
         tensor_data_path=tensor_data_path,
         result_path=result_path,
-        N_EPOCHS=200,
+        N_EPOCHS=75,
         batch_size=16,
         weight_decay=0.001,
         LEARNING_RATE=1e-4,

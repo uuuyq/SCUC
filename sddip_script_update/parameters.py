@@ -206,7 +206,7 @@ class Parameters:
         self.penalty = max(self.cost_coeffs) * 10
         self.cost_coeffs += [self.penalty] * 2
 
-        logger.info("Cost coefficients: %s", self.cost_coeffs)
+        # logger.info("Cost coefficients: %s", self.cost_coeffs)
 
         self.pg_min = self.gen_df.Pmin.values.tolist()
         self.pg_max = self.gen_df.Pmax.values.tolist()

@@ -10,7 +10,7 @@ class CompareConstant:
     time_sddip = "time_sddip"  # 运行时间
     cuts_sddip = "cuts_sddip"  # 与cuts_train 有区别，这里是重新跑sddip至收敛得到的所有cut
     obj_sddip_iter = "obj_sddip_iter"  # sddip迭代时保存的每一次迭代的obj
-    obj_sddip = "obj_sddip"  # 使用sddip迭代cuts计算的obj list
+    obj_sddip = "obj_sddip"  # 使用sddip迭代收敛得到的cuts计算obj list
     LB_sddip = "LB_sddip"
     # read
     time_sddip_read = "time_sddip_read"
@@ -42,6 +42,11 @@ class CompareConstant:
 
     time_pred_re_sddip_list = [f"time_pred_re_sddip_{i}" for i in range(1, 10)]
     obj_pred_re_sddip_list = [f"obj_pred_re_sddip_{i}" for i in range(1, 10)]
+
+
+    obj_sddip_stage = "obj_sddip_stage"
+    obj_pred_stage = "obj_pred_stage"
+    obj_pred_re_stage = "obj_pred_re_stage"
 
 
 

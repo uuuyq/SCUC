@@ -192,7 +192,7 @@ if __name__ == '__main__':
         num_data=4536,
         num_stage=24,
         n_vars=13,
-        feat_dim=26,  # instance_index, stage, feat(12 * 2)
+        feat_dim=14,  # instance_index, stage, feat(6 * 2)
         single_cut_dim=14,
         n_pieces=15,
         train_data_path=train_data_path,

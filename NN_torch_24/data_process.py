@@ -105,6 +105,13 @@ def collect_data_update(train_data_path, tensor_path, num_data, num_cuts, additi
     print("label_tensor.shape: {}".format(label_tensor.shape))
     print("x_tensor.shape: {}".format(x_tensor.shape))
 
+
+    # 6bus CV 1000 num_data
+    # feat_tensor.shape: torch.Size([1000, 23, 14])
+    # scenario_tensor.shape: torch.Size([1000, 23, 6, 12])
+    # label_tensor.shape: torch.Size([1000, 23, 15, 14])
+    # x_tensor.shape: torch.Size([1000, 23, 15, 13])
+
     # 118bus  4060 num_data
     # feat_tensor.shape: torch.Size([4053, 23, 238])
     # scenario_tensor.shape: torch.Size([4053, 23, 6, 236])
@@ -123,7 +130,7 @@ def collect_data_update(train_data_path, tensor_path, num_data, num_cuts, additi
         pickle.dump(x_tensor, f)
 
 if __name__ == '__main__':
-    train_data_path = r"../data_gen_24_bus118\train_data"
-    tensor_path = r"tensor_118"
+    train_data_path = r"../data_gen_24_bus6_CV\train_data"
+    tensor_path = r"tensor_6_CV"
     num_data = 1000
     collect_data_update(train_data_path, tensor_path, num_data, 15, additional_data="prefix")
